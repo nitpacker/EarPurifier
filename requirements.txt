@@ -1,0 +1,5 @@
+PySide6>=6.6.0
+loguru>=0.7.0
+requests>=2.30.0
+kaggle>=1.6.0
+pyinstaller>=6.0.0

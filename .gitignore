@@ -1,0 +1,26 @@
+# Environments
+venv/
+env/
+.venv/
+
+# Build and Distribution
+build/
+dist/
+*.spec
+*.pkg
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and Log files
+*.log
+*.mkv
+*.mp4
+.temp/
+temp/
+
+# OS generated files
+.DS_Store
+Thumbs.db
