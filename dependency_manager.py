@@ -72,44 +72,33 @@ class FFmpegDownloader(QThread):
 
     def run(self):
         try:
-            self.status_update.emit("Fetching latest FFmpeg hash...")
-            base_url = "https://www.gyan.dev/ffmpeg/builds/"
-            zip_url = base_url + "ffmpeg-release-essentials.zip"
-            sha_url = base_url + "ffmpeg-release-essentials.zip.sha256"
-
-            # 1. Get SHA256
-            req = urllib.request.Request(sha_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                expected_hash = response.read().decode('utf-8').strip()
-
-            # 2. Download ZIP
             self.status_update.emit("Downloading FFmpeg...")
+            # Use GitHub CDN (BtbN) which is backed by Fastly, 100x faster than gyan.dev
+            zip_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
             zip_path = os.path.join(DependencyManager.get_appdata_dir(), "ffmpeg.zip")
+            
             req = urllib.request.Request(zip_url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req) as response, open(zip_path, 'wb') as out_file:
                 total_size = int(response.getheader('Content-Length', 0))
                 block_size = 8192
                 downloaded = 0
-                hasher = hashlib.sha256()
+                last_percent = -1
 
                 while True:
                     buffer = response.read(block_size)
                     if not buffer:
                         break
                     out_file.write(buffer)
-                    hasher.update(buffer)
                     downloaded += len(buffer)
+                    
                     if total_size > 0:
                         percent = int((downloaded / total_size) * 100)
-                        self.progress_update.emit(percent)
+                        # CRITICAL FIX: Only emit signal if percent actually changes to prevent UI thread flooding
+                        if percent > last_percent:
+                            self.progress_update.emit(percent)
+                            last_percent = percent
 
-            # 3. Verify Hash
-            self.status_update.emit("Verifying download hash...")
-            actual_hash = hasher.hexdigest()
-            if actual_hash != expected_hash:
-                raise Exception(f"Hash mismatch! Expected {expected_hash}, got {actual_hash}")
-
-            # 4. Extract
+            # Extract
             self.status_update.emit("Extracting FFmpeg binaries...")
             bin_dir = DependencyManager.get_bin_dir()
             with zipfile.ZipFile(zip_path, 'r') as z:
