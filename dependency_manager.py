@@ -225,16 +225,23 @@ print("SUCCESS_DOWNLOAD")
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
                 
-            process = subprocess.Popen([env_python, script_path], **kwargs)
+            env = os.environ.copy()
+            env_dir = DependencyManager.get_env_dir()
+            # Emulate conda activation by prepending necessary paths
+            env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
+                
+            process = subprocess.Popen([env_python, script_path], env=env, **kwargs)
             
             import re
             percent_pattern = re.compile(r'(\d{1,3})%')
             
+            captured_stderr = []
             while True:
                 line = process.stderr.readline()
                 if not line and process.poll() is not None:
                     break
                 if line:
+                    captured_stderr.append(line)
                     match = percent_pattern.search(line)
                     if match:
                         try:
@@ -244,7 +251,7 @@ print("SUCCESS_DOWNLOAD")
                         except:
                             pass
             
-            stdout_out, stderr_out = process.communicate()
+            stdout_out, _ = process.communicate()
             
             try:
                 os.remove(script_path)
@@ -256,7 +263,18 @@ print("SUCCESS_DOWNLOAD")
                 self.status_update.emit("Model downloaded successfully!")
                 self.finished_download.emit(True, "Success")
             else:
-                raise Exception(f"Failed to download model: {stderr_out}")
+                full_stderr = "".join(captured_stderr)
+                if "DLL load failed" in full_stderr:
+                    error_msg = (
+                        "Your Windows system is missing the Microsoft Visual C++ Redistributable, "
+                        "which is required to run the AI engine locally.\n\n"
+                        "Please download and install it from Microsoft:\n"
+                        "https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n"
+                        "(Restart the app after installing)"
+                    )
+                    raise Exception(error_msg)
+                else:
+                    raise Exception(f"Failed to download model:\n{full_stderr.strip()}")
                 
         except Exception as e:
             self.finished_download.emit(False, str(e))

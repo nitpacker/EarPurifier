@@ -18,10 +18,11 @@ def setup_logger(config: ConfigManager):
         
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 
-    # Always log to console (stdout)
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    # Only add console handler if stdout is available
+    if sys.stdout:
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
 
     if config.get("enable_logging"):
         log_dir = os.path.join(config.appdata_dir, "applogs")
@@ -36,8 +37,8 @@ def setup_logger(config: ConfigManager):
                 if os.stat(file_path).st_mtime < current_time - 172800:
                     try:
                         os.remove(file_path)
-                    except Exception as e:
-                        print(f"Could not delete old log {f}: {e}")
+                    except Exception:
+                        pass
                         
         log_file = os.path.join(log_dir, "earpurifier.log")
         # Rotating log every midnight

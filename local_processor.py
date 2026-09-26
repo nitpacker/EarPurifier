@@ -121,16 +121,26 @@ class LocalJobProcessor(QThread):
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
                 
-            process = subprocess.Popen(cmd, **kwargs)
+            env = os.environ.copy()
+            try:
+                from .dependency_manager import DependencyManager
+            except ImportError:
+                from dependency_manager import DependencyManager
+            env_dir = DependencyManager.get_env_dir()
+            env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
+                
+            process = subprocess.Popen(cmd, env=env, **kwargs)
             
             percent_pattern = re.compile(r'(\d{1,3})%')
             last_pct = -1
             
+            captured_stderr = []
             while True:
                 line = process.stderr.readline()
                 if not line and process.poll() is not None:
                     break
                 if line:
+                    captured_stderr.append(line)
                     match = percent_pattern.search(line)
                     if match:
                         try:
@@ -141,9 +151,18 @@ class LocalJobProcessor(QThread):
                         except:
                             pass
                             
-            stdout_out, stderr_out = process.communicate()
+            stdout_out, _ = process.communicate()
             if process.returncode != 0:
-                raise Exception(f"AI Engine failed: {stderr_out}\n{stdout_out}")
+                full_stderr = "".join(captured_stderr)
+                if "DLL load failed" in full_stderr:
+                    error_msg = (
+                        "Missing Microsoft Visual C++ Redistributable.\n"
+                        "Please download and install it from Microsoft:\n"
+                        "https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n"
+                        "(Restart the app after installing)"
+                    )
+                    raise Exception(error_msg)
+                raise Exception(f"AI Engine failed:\n{full_stderr.strip()}\n{stdout_out}")
             
             # Identify vocal file
             clean_wav = None

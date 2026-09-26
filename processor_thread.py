@@ -27,6 +27,19 @@ class JobProcessor(QThread):
         self.kaggle_bridge = None
         self.running = True
 
+    def update_credentials(self, username: str, api_key: str):
+        self.username = username
+        self.api_key = api_key
+        try:
+            try:
+                from .kaggle_bridge import KaggleBridge
+            except ImportError:
+                from kaggle_bridge import KaggleBridge
+            self.kaggle_bridge = KaggleBridge(self.username, self.api_key)
+            logger.info(f"Re-initialized KaggleBridge with new user: {self.username}")
+        except Exception as e:
+            logger.error(f"Failed to re-initialize KaggleBridge: {e}")
+
     def run(self):
         try:
             try:
@@ -82,32 +95,36 @@ class JobProcessor(QThread):
         logger.info(f"[{job_id}] {msg}")
         self.progress_update.emit(job_id, msg)
 
-    def _handle_abort(self, job_id: str, kernel_id: str, temp_dir: str):
-        self._log(job_id, "Aborting: Cleaning up local temporary files and cancelling Kaggle kernel...")
-        # 1. Cancel/delete Kaggle kernel
-        if kernel_id:
+    def _handle_abort(self, job_id: str, kernel_id: str, dataset_id: str, temp_dir: str, bridge=None):
+        bridge = bridge or self.kaggle_bridge
+        self._log(job_id, "Aborting: Cancelling Kaggle kernel and cleaning up local temporary files...")
+        # 1. Cancel/delete Kaggle kernel so it stops consuming GPU quota
+        if kernel_id and bridge:
             try:
-                self.kaggle_bridge.cancel_kernel(kernel_id)
+                bridge.cancel_kernel(kernel_id)
             except Exception as e:
                 logger.warning(f"Failed to cancel Kaggle kernel: {e}")
 
-        # 2. Flush Kaggle buffer dataset
-        try:
-            empty_dir = os.path.join(self.queue_manager.app_data_dir, "empty_buffer")
-            self.kaggle_bridge.flush_buffer_dataset(empty_dir)
-        except Exception as e:
-            logger.warning(f"Failed to clear Kaggle buffer on abort: {e}")
-
-        # 3. Clean up local temp files
+        # 2. Clean up local temp files immediately
         try:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception as e:
             logger.warning(f"Failed to remove temp dir on abort: {e}")
 
-        self._log(job_id, "Job aborted and all resources cleaned up successfully.")
+        # 3. Delete the unique dataset buffer
+        if dataset_id and bridge:
+            try:
+                owner, slug = dataset_id.split("/")
+                bridge.api.dataset_delete(owner, slug, no_confirm=True)
+            except Exception as e:
+                logger.warning(f"Failed to delete unique Kaggle dataset {dataset_id} on abort: {e}")
+
+        self._log(job_id, "Job aborted and cleaned up.")
 
     def process_job(self, job_id: str, job: dict):
+        # Capture the current bridge so mid-job credential changes don't corrupt ongoing requests
+        bridge = self.kaggle_bridge
         video_path = job["original_video"]
         status = job["status"]
         temp_dir = os.path.join(self.queue_manager.app_data_dir, "temp", job_id)
@@ -120,6 +137,10 @@ class JobProcessor(QThread):
                 job["duration"] = duration
             except Exception:
                 pass
+        
+        # Use a job-stamped audio filename so Kaggle NEVER serves a stale file from a previous job
+        job_tag = job_id[:8]
+        stamped_audio_name = f"audio_{job_tag}.flac"
         
         flac_path = job.get("flac_audio")
         if not flac_path:
@@ -136,7 +157,7 @@ class JobProcessor(QThread):
             self._update_status(job_id, "EXTRACTING")
             self._log(job_id, "Extracting lossless FLAC...")
             extract_audio(video_path, flac_path)
-            self.queue_manager.update_job(job_id, {"flac_audio": flac_path})
+            self.queue_manager.update_job(job_id, {"flac_audio": flac_path, "stamped_audio_name": stamped_audio_name})
             status = "UPLOADING"
             
         # 2. UPLOADING
@@ -144,20 +165,40 @@ class JobProcessor(QThread):
             self._update_status(job_id, "UPLOADING")
             self._log(job_id, "Pushing audio to Kaggle dataset...")
             
+            # Retrieve the stamped name (may already be in job if resuming)
+            stamped_audio_name = job.get("stamped_audio_name", f"audio_{job_id[:8]}.flac")
+            
             upload_success = False
+            dataset_id = job.get("dataset_id")
             for up_attempt in range(5):
-                if not self.running:
+                if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                    self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                     return
                 try:
-                    self.kaggle_bridge.push_audio(flac_path, os.path.join(temp_dir, "dataset_push"))
+                    dataset_id = bridge.push_audio(
+                        flac_path, 
+                        os.path.join(temp_dir, "dataset_push"), 
+                        stamped_audio_name, 
+                        job_id,
+                        abort_check=lambda: not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED"
+                    )
                     upload_success = True
                     break
                 except Exception as e:
-                    self._log(job_id, f"Upload interrupted (attempt {up_attempt+1}/5). Retrying...")
-                    time.sleep(3)
+                    self._log(job_id, f"Upload interrupted (attempt {up_attempt+1}/5): {str(e)[:100]}... Retrying...")
+                    for _ in range(3):
+                        if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                            self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
+                            return
+                        time.sleep(1)
             
             if not upload_success:
                 raise Exception("Failed to upload audio to Kaggle after 5 attempts.")
+            job["dataset_id"] = dataset_id
+            
+            if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
+                return
             
             self._log(job_id, "Dispatching Kaggle worker kernel...")
             worker_dir = os.path.join(os.path.dirname(__file__), "worker")
@@ -176,27 +217,39 @@ class JobProcessor(QThread):
                 worker_code = f.read()
                 
             import re
+            # Inject the correct model
             worker_code = re.sub(r'separator\.load_model\(model_filename="[^"]+"\)', f'separator.load_model(model_filename="{c_model}")', worker_code)
+            # Inject the expected audio filename so the worker can verify it got the right file
+            worker_code = re.sub(r'EXPECTED_AUDIO_NAME\s*=\s*"[^"]*"', f'EXPECTED_AUDIO_NAME = "{stamped_audio_name}"', worker_code)
             
             with open(worker_path, "w", encoding="utf-8") as f:
                 f.write(worker_code)
                 
             dispatch_success = False
             for disp_attempt in range(5):
-                if not self.running:
+                if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                    self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                     return
                 try:
-                    kernel_id = self.kaggle_bridge.push_kernel(worker_dir, f"earpurifier-worker-{job_id[:8]}")
+                    kernel_id = bridge.push_kernel(worker_dir, f"earpurifier-worker-{job_id[:8]}", dataset_id)
                     dispatch_success = True
                     break
                 except Exception as e:
                     self._log(job_id, f"Dispatch interrupted (attempt {disp_attempt+1}/5). Retrying...")
-                    time.sleep(3)
-                    
+                    for _ in range(3):
+                        if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                            self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
+                            return
+                        time.sleep(1)
+                        
             if not dispatch_success:
                 raise Exception("Failed to dispatch worker kernel after 5 attempts.")
                 
-            self.queue_manager.update_job(job_id, {"kaggle_kernel_id": kernel_id})
+            if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
+                return
+                
+            self.queue_manager.update_job(job_id, {"kaggle_kernel_id": kernel_id, "dataset_id": dataset_id})
             status = "PROCESSING_CLOUD"
             
         # 3. PROCESSING_CLOUD
@@ -208,11 +261,11 @@ class JobProcessor(QThread):
             while self.running:
                 # Check for abort
                 if self.queue_manager.get_job(job_id).get("status") == "ABORTED":
-                    self._handle_abort(job_id, kernel_id, temp_dir)
+                    self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                     return
 
                 try:
-                    k_status = self.kaggle_bridge.poll_status(kernel_id)
+                    k_status = bridge.poll_status(kernel_id)
                     if k_status == "COMPLETE":
                         break
                     elif k_status == "ERROR":
@@ -225,7 +278,7 @@ class JobProcessor(QThread):
                             break
                         time.sleep(1)
                     if self.queue_manager.get_job(job_id).get("status") == "ABORTED":
-                        self._handle_abort(job_id, kernel_id, temp_dir)
+                        self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                         return
 
                     retries = 0 # reset retries on success
@@ -241,7 +294,7 @@ class JobProcessor(QThread):
                             break
                         time.sleep(1)
                     if self.queue_manager.get_job(job_id).get("status") == "ABORTED":
-                        self._handle_abort(job_id, kernel_id, temp_dir)
+                        self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                         return
                     
             status = "DOWNLOADING"
@@ -255,16 +308,21 @@ class JobProcessor(QThread):
             download_success = False
             last_dl_error = None
             for dl_attempt in range(5):
-                if not self.running:
+                if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                    self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                     return
                 try:
-                    self.kaggle_bridge.download_output(kernel_id, temp_dir)
+                    bridge.download_output(kernel_id, temp_dir)
                     download_success = True
                     break
                 except Exception as e:
                     last_dl_error = e
                     self._log(job_id, f"Download interrupted (attempt {dl_attempt+1}/5). Retrying...")
-                    time.sleep(3)
+                    for _ in range(3):
+                        if not self.running or self.queue_manager.get_job(job_id).get("status") == "ABORTED":
+                            self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
+                            return
+                        time.sleep(1)
                     
             if not download_success:
                 raise Exception(f"Failed to download output after 5 attempts: {last_dl_error}")
@@ -313,10 +371,15 @@ class JobProcessor(QThread):
                 shutil.rmtree(temp_dir)
                 self._log(job_id, "Cleaned up local temporary files.")
                 
-                # Clear Kaggle dataset buffer
-                empty_dir = os.path.join(self.queue_manager.app_data_dir, "empty_buffer")
-                self.kaggle_bridge.flush_buffer_dataset(empty_dir)
-                self._log(job_id, "Cleared Kaggle buffer dataset.")
+                # Delete unique Kaggle dataset buffer
+                dataset_id = job.get("dataset_id")
+                if dataset_id:
+                    try:
+                        owner, slug = dataset_id.split("/")
+                        bridge.api.dataset_delete(owner, slug, no_confirm=True)
+                        self._log(job_id, "Deleted temporary Kaggle dataset.")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete unique Kaggle dataset {dataset_id}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to perform cleanup: {e}")
                 

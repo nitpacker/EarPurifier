@@ -1152,6 +1152,27 @@ class JobQueueSection(QWidget):
         views_bar.addWidget(self.cmb_filter)
 
         views_bar.addStretch()
+        
+        btn_mariam = QPushButton("🌱 From Mariam Initiative")
+        btn_mariam.setCursor(Qt.PointingHandCursor)
+        btn_mariam.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #10b981;
+                font-weight: 700;
+                font-size: 12px;
+                border: none;
+                text-align: right;
+            }
+            QPushButton:hover {
+                color: #047857;
+                text-decoration: underline;
+            }
+        """)
+        import webbrowser
+        btn_mariam.clicked.connect(lambda: webbrowser.open('https://t.me/MariamInitiative'))
+        views_bar.addWidget(btn_mariam)
+
         main_layout.addLayout(views_bar)
 
         # ── 3. Batch Action Bar ──
@@ -1838,6 +1859,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.config, self)
         if dlg.exec() == QDialog.Accepted:
             dlg.save_and_get_config()
+            setup_logger(self.config)
             QMessageBox.information(self, "Saved", "Settings saved successfully!")
             self.init_threads()
             if hasattr(self, 'local_section'):
@@ -1857,9 +1879,9 @@ class MainWindow(QMainWindow):
                 self.cloud_thread.error_job.connect(self.on_job_error)
                 self.cloud_thread.start()
             else:
-                self.cloud_thread.username = username
-                self.cloud_thread.api_key = api_key
+                self.cloud_thread.update_credentials(username, api_key)
 
+        # Initialize Local Thread
         if not hasattr(self, 'local_thread') or not self.local_thread.isRunning():
             self.local_thread = LocalJobProcessor(self.queue_manager, self.config)
             self.local_thread.progress_update.connect(self.local_section.on_progress_updated)

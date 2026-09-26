@@ -6,6 +6,11 @@ import shutil
 INPUT_DIR = "/kaggle/input"
 OUTPUT_DIR = "/kaggle/working"
 
+# This constant is injected by the app before dispatch. It is the unique,
+# job-stamped filename (e.g. audio_be4f89dc.flac) uploaded for THIS specific job.
+# If the dataset somehow contains a different file, separation is aborted.
+EXPECTED_AUDIO_NAME = "audio.flac"
+
 ASSETS_DIR = "/kaggle/input/earpurifier-cloud-assets-v2"
 for root, dirs, files in os.walk(INPUT_DIR):
     if "wheels" in dirs and "models" in dirs:
@@ -31,24 +36,26 @@ def run_separation():
     # We must import inside the function after installing
     from audio_separator.separator import Separator
 
-    # Find audio file
-    audio_files = []
-    if os.path.exists(INPUT_DIR):
-        for root, dirs, files in os.walk(INPUT_DIR):
-            for file in files:
-                if file.endswith((".flac", ".wav", ".mp3", ".mp4", ".mkv")):
-                    audio_files.append(os.path.join(root, file))
-    
-    if not audio_files:
-        print(f"No audio files found in {INPUT_DIR}")
-        print("Directory contents:")
+    # Find the expected audio file by its job-stamped name
+    audio_file = None
+    for root, dirs, files in os.walk(INPUT_DIR):
+        for file in files:
+            if file == EXPECTED_AUDIO_NAME:
+                audio_file = os.path.join(root, file)
+                break
+        if audio_file:
+            break
+
+    # Hard fail if the expected file is not found - this catches stale dataset scenarios
+    if not audio_file:
+        print(f"FATAL: Expected audio file '{EXPECTED_AUDIO_NAME}' not found in dataset.")
+        print("This may mean the Kaggle dataset still has a file from a previous job.")
+        print("Listing all files in input directory:")
         for root, dirs, files in os.walk(INPUT_DIR):
             print(f"ROOT: {root}")
-            print(f"DIRS: {dirs}")
             print(f"FILES: {files}")
-        return
-        
-    audio_file = audio_files[0]
+        raise FileNotFoundError(f"Expected '{EXPECTED_AUDIO_NAME}' not found. Aborting to prevent processing wrong audio.")
+
     print(f"Processing {audio_file}...")
 
     # Determine model directory

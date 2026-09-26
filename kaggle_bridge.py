@@ -3,7 +3,11 @@ import json
 import shutil
 import time
 import logging
+import certifi
 from typing import Optional
+
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+os.environ["CURL_CA_BUNDLE"] = certifi.where()
 
 logger = logging.getLogger(__name__)
 
@@ -12,78 +16,85 @@ class KaggleError(Exception):
 
 class KaggleBridge:
     def __init__(self, username: str, api_key: str):
-        self.username = username.strip().lower()
+        self.username = username.strip().lower().replace('"', '').replace("'", "")
+        clean_key = api_key.strip().replace('"', '').replace("'", "").replace(",", "")
         self.dataset_name = "earpurifier-audio-buffer"
         self.dataset_id = f"{self.username}/{self.dataset_name}"
         self.assets_dataset_id = f"{self.username}/audio-separation-assets"
         
         # Inject API credentials to environment for kaggle API SDK
         os.environ["KAGGLE_USERNAME"] = self.username
-        os.environ["KAGGLE_KEY"] = api_key.strip()
         
-        # Initialize native Kaggle API client (NO CLI SUBPROCESS DEPENDENCY)
+        # Clear previous credentials from memory to prevent pollution if user switches token formats mid-session
+        os.environ.pop("KAGGLE_KEY", None)
+        os.environ.pop("KAGGLE_API_TOKEN", None)
+        
+        if clean_key.startswith("KGAT_"):
+            os.environ["KAGGLE_API_TOKEN"] = clean_key
+        else:
+            os.environ["KAGGLE_KEY"] = clean_key
+            
+        # Force the config dir to a dummy path so the SDK can NEVER accidentally fall back to a stale ~/.kaggle/kaggle.json
+        os.environ["KAGGLE_CONFIG_DIR"] = os.path.join(os.environ.get("APPDATA", ""), "EarPurifier", "dummy_kaggle")
+        
+        # Initialize native Kaggle API client
         from kaggle.api.kaggle_api_extended import KaggleApi
         self.api = KaggleApi()
         self.api.authenticate()
+        
+        # DEBUG LOGGING
+        try:
+            raw_key = os.environ.get("KAGGLE_KEY", "")
+            mask_pass = f"{raw_key[:4]}...{raw_key[-4:]}" if len(raw_key) > 8 else "INVALID_LENGTH"
+            logger.info(f"Kaggle Auth Debug -> Enforced User: '{self.username}', Enforced Key: '{mask_pass}'")
+        except Exception as e:
+            logger.error(f"Kaggle Auth Debug Failed: {e}")
 
-    def ensure_buffer_dataset(self, temp_dir: str):
-        """Ensures the audio buffer dataset exists on Kaggle, creates it if not."""
+    def push_audio(self, audio_path: str, temp_dir: str, stamped_name: str, job_id: str, abort_check: Optional[callable] = None) -> str:
+        """Pushes an audio file to a fresh, job-specific Kaggle buffer dataset."""
+        os.makedirs(temp_dir, exist_ok=True)
+        # Clear temp dir
+        for f in os.listdir(temp_dir):
+            try:
+                os.remove(os.path.join(temp_dir, f))
+            except Exception:
+                pass
+                
+        # Copy new audio with the job-stamped name
+        dest_path = os.path.join(temp_dir, stamped_name)
+        shutil.copy(audio_path, dest_path)
+        
+        job_slug = f"earpurifier-audio-buffer-{job_id[:8]}"
+        dataset_id = f"{self.username}/{job_slug}"
+        
         metadata = {
-            "title": self.dataset_name,
-            "id": self.dataset_id,
-            "licenses": [{"name": "CC0-1.0"}]
+            "title": job_slug,
+            "id": dataset_id,
+            "licenses": [{"name": "CC0-1.0"}],
+            "isPrivate": False
         }
         with open(os.path.join(temp_dir, "dataset-metadata.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
             
-        try:
-            # Check if dataset exists via native API
-            self.api.dataset_status(self.dataset_id)
-            logger.info(f"Dataset {self.dataset_id} exists on Kaggle.")
-        except Exception as e:
-            logger.info(f"Dataset {self.dataset_id} not found ({e}), creating new one on Kaggle...")
-            try:
-                self.api.dataset_create_new(folder=temp_dir, dir_mode="zip")
-                logger.info("Successfully created dataset on Kaggle.")
-            except Exception as create_err:
-                logger.warning(f"dataset_create_new note: {create_err}")
+        logger.info(f"Creating unique job dataset {dataset_id}...")
+        resp = self.api.dataset_create_new(folder=temp_dir, dir_mode="zip", quiet=True)
+        # Kaggle sometimes returns an empty string for error even on success
+        if resp and getattr(resp, "error", None):
+            error_msg = getattr(resp, "error")
+            if error_msg.strip():
+                raise KaggleError(f"Failed to create dataset on Kaggle: {error_msg}")
+            
+        logger.info("Successfully created dataset on Kaggle. Waiting 45s for processing...")
+        if abort_check:
+            for _ in range(45):
+                if abort_check():
+                    break
+                time.sleep(1)
+        else:
+            time.sleep(45)
+        return dataset_id
 
-    def push_audio(self, audio_path: str, temp_dir: str):
-        """Pushes an audio file to the Kaggle buffer dataset."""
-        os.makedirs(temp_dir, exist_ok=True)
-        # Clear temp dir except metadata
-        for f in os.listdir(temp_dir):
-            if f != "dataset-metadata.json":
-                try:
-                    os.remove(os.path.join(temp_dir, f))
-                except Exception:
-                    pass
-                
-        # Copy new audio
-        shutil.copy(audio_path, temp_dir)
-        
-        # Ensure dataset exists
-        self.ensure_buffer_dataset(temp_dir)
-        
-        logger.info(f"Pushing new version of {self.dataset_id}...")
-        try:
-            self.api.dataset_create_version(folder=temp_dir, version_notes="New audio job", dir_mode="zip")
-        except Exception as e:
-            logger.info(f"Dataset version push note: {e}")
-
-        logger.info("Waiting 30s for Kaggle to process the dataset version...")
-        time.sleep(30)
-
-    def flush_buffer_dataset(self, empty_dir: str):
-        """Flushes/clears the Kaggle buffer dataset on abort."""
-        os.makedirs(empty_dir, exist_ok=True)
-        self.ensure_buffer_dataset(empty_dir)
-        try:
-            self.api.dataset_create_version(folder=empty_dir, version_notes="Clear buffer on abort", dir_mode="zip")
-        except Exception as e:
-            logger.warning(f"Failed to clear Kaggle buffer on abort: {e}")
-        
-    def push_kernel(self, kernel_dir: str, kernel_name: str) -> str:
+    def push_kernel(self, kernel_dir: str, kernel_name: str, dataset_id: str) -> str:
         """Pushes the worker kernel and returns the kernel ID."""
         kernel_id = f"{self.username}/{kernel_name}"
         
@@ -97,7 +108,7 @@ class KaggleBridge:
           "enable_gpu": True,
           "enable_internet": True,
           "dataset_sources": [
-            self.dataset_id,
+            dataset_id,
             "verymuch/earpurifier-cloud-assets-v2"
           ],
           "competition_sources": [],

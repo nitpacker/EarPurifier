@@ -75,11 +75,12 @@ To make Cloud processing instant (~60s total), EarPurifier bypasses Kaggle's slo
 If you encounter unexpected behavior, it is likely governed by one of these engineered edge cases:
 
 *   **Kaggle Network Drops (`IncompleteRead`)**: Downloading/Uploading 20MB files via the Kaggle API routinely fails due to dropped packets. **Fix:** Every network call in `processor_thread.py` is wrapped in a strict 5-attempt retry loop with a 3-second sleep.
-*   **Kaggle Dataset Race Conditions**: When `kaggle_bridge.py` pushes the audio FLAC, Kaggle takes time to propagate it across CDN nodes. If a kernel is dispatched immediately, it mounts an empty folder. **Fix:** `processor_thread.py` enforces a `time.sleep(30)` propagation delay.
-*   **Windows UTF-8 Crashes**: The Kaggle CLI crashes on Windows `cp1252` charmaps when rendering progress bars. **Fix:** `kaggle_bridge.py` monkey-patches subprocess environments with `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8:surrogateescape`.
-*   **ETA Calculations (Cloud)**: Cloud jobs cannot precisely report progress percentages. **Fix:** `main.py` uses a deterministic deterministic formula (`remaining_seconds = 150 + (duration * 1.5)`) to run a local countdown. If it hits 0 early, it displays `"ETA: Anytime now..."`. Local jobs rely on stdout regex parsing for real percentages.
+*   **Kaggle Dataset Race Conditions & Unique Buffers**: Previously, jobs shared a single dataset buffer. This caused race conditions when multiple jobs tried to update the dataset concurrently, and Kaggle's versioning was slow to propagate. **Fix:** `kaggle_bridge.py` creates a unique, disposable dataset (e.g. `earpurifier-audio-buffer-<uuid>`) for *every single job*. This allows the user to queue and process 5 videos simultaneously in the cloud without them interfering.
+*   **PyInstaller tqdm Crash (The Invisible Abort)**: The Kaggle SDK internally uses the `tqdm` progress bar. In a PyInstaller `--windowed` executable, the default `sys.stderr` is detached. When `tqdm` attempts to print the progress bar, it throws an exception that the Kaggle SDK silently catches, causing uploads to mysteriously abort and submit empty datasets (resulting in "Please upload at least one file" errors). **Fix:** We strictly pass `quiet=True` to Kaggle SDK methods (like `dataset_create_new`) to disable `tqdm` and bypass the crash entirely.
+*   **Kaggle API Token Format Migration (The `KGAT_` Bug)**: Kaggle recently deprecated standard 32-hex API keys in favor of Personal Access Tokens (prefixed with `KGAT_`). The Kaggle SDK will *violently reject* `KGAT_` tokens with a `401 Unauthorized` if they are mapped to the legacy `KAGGLE_KEY` environment variable (which forces HTTP Basic Auth). **Fix:** `kaggle_bridge.py` dynamically inspects the key string. If it detects `KGAT_`, it maps it to `KAGGLE_API_TOKEN` to force the SDK to use Bearer Auth. It also aggressively `.pop()`s both keys from `os.environ` before assignment to prevent memory pollution when users hot-swap keys.
+*   **ETA Calculations (Cloud)**: Cloud jobs cannot precisely report progress percentages. **Fix:** `main.py` uses a deterministic formula (`remaining_seconds = 150 + (duration * 1.5)`) to run a local countdown. If it hits 0 early, it displays `"ETA: Anytime now..."`. Local jobs rely on stdout regex parsing for real percentages.
 *   **Vocal Track Matching**: The `audio-separator` output filename is unpredictable based on the model. **Fix:** The worker script explicitly checks `if "(vocals)" in f.lower():` and forcefully renames it to `clean_vocals.wav` before downloading.
-*   **Storage Cleanup**: To prevent Kaggle from hitting 100GB limits, `processor_thread.py` pushes an empty folder (`empty_buffer`) to overwrite the audio dataset post-job. To prevent `%APPDATA%` from bloating, `QueueManager` actively runs `shutil.rmtree(temp)` on application startup to sweep orphaned files from force-closures.
+*   **Storage Cleanup**: To prevent Kaggle from hitting limits and keeping a clutter of unique datasets, `processor_thread.py` calls `api.dataset_delete` to destroy the unique disposable dataset post-job. To prevent `%APPDATA%` from bloating locally, `QueueManager` actively runs `shutil.rmtree(temp)` on application startup to sweep orphaned files from force-closures.
 
 ---
 
@@ -92,7 +93,7 @@ EarPurifier relies on a fragile web of ML libraries. **Never arbitrarily update 
 | `PySide6` | Application UI framework | None |
 | `audio-separator[gpu]` | Core AI isolation engine | Tied heavily to PyTorch/ONNX compatibility. |
 | `onnxruntime-gpu` | Hardware Acceleration | **Must be pinned to `==1.19.2`**. Kaggle T4 GPUs run CUDA 12. Versions `>= 1.20.0` require CUDA 13. Upgrading this causes silent CPU fallback (10x slower). |
-| `kaggle` | Cloud orchestrator API | Updates may break `builtins.open` monkey-patching in `kaggle_bridge.py`. |
+| `kaggle` | Cloud orchestrator API | Must be careful with progress bars in PyInstaller (use `quiet=True`). |
 | `ffmpeg-python` | Media extraction | The host system must have the `ffmpeg` binary in PATH. |
 
 ---
