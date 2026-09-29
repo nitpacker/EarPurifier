@@ -138,21 +138,77 @@ class KaggleBridge:
             return "QUEUED"
             
     def download_output(self, kernel_id: str, download_dir: str):
-        """Downloads the output of the completed kernel."""
+        """Downloads the output of the completed kernel robustly with resume support."""
         logger.info(f"Downloading output for {kernel_id}...")
-        import builtins
-        _open = builtins.open
-        def safe_open(*args, **kwargs):
-            mode = args[1] if len(args) > 1 else kwargs.get('mode', 'r')
-            if 'w' in mode and 'b' not in mode:
-                kwargs['encoding'] = 'utf-8'
-            return _open(*args, **kwargs)
+        
+        from kagglesdk.kernels.types.kernels_api_service import ApiListKernelSessionOutputRequest
+        import requests
+        
+        owner_slug, kernel_slug = kernel_id.split("/")
+        with self.api.build_kaggle_client() as kaggle_client:
+            req = ApiListKernelSessionOutputRequest()
+            req.user_name = owner_slug
+            req.kernel_slug = kernel_slug
+            resp = kaggle_client.kernels.kernels_api_client.list_kernel_session_output(req)
             
-        builtins.open = safe_open
-        try:
-            self.api.kernels_output(kernel_id, path=download_dir)
-        finally:
-            builtins.open = _open
+        if not resp.files:
+            raise Exception("No output files found for kernel.")
+            
+        os.makedirs(download_dir, exist_ok=True)
+        
+        for item in resp.files:
+            # We only care about the clean_vocals.wav or other audio files
+            if not item.file_name.endswith(".wav"):
+                continue
+                
+            outfile = os.path.join(download_dir, item.file_name)
+            url = item.url
+            
+            # Robust Resumable Download Loop
+            max_retries = 10
+            for attempt in range(max_retries):
+                try:
+                    headers = {}
+                    file_mode = "wb"
+                    existing_size = 0
+                    
+                    if os.path.exists(outfile):
+                        existing_size = os.path.getsize(outfile)
+                        if existing_size > 0:
+                            headers["Range"] = f"bytes={existing_size}-"
+                            file_mode = "ab"
+                            
+                    res = requests.get(url, headers=headers, stream=True, timeout=15)
+                    
+                    # If the server doesn't support Range, it returns 200 and sends from beginning
+                    if res.status_code == 200:
+                        file_mode = "wb"
+                        existing_size = 0
+                    elif res.status_code == 416: # Range not satisfiable (file already fully downloaded)
+                        logger.info(f"File {item.file_name} already fully downloaded.")
+                        break
+                    elif res.status_code != 206:
+                        res.raise_for_status()
+                        
+                    total_expected = existing_size + int(res.headers.get("Content-Length", 0))
+                    
+                    with open(outfile, file_mode) as f:
+                        for chunk in res.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                                
+                    # Verify if downloaded completely
+                    if os.path.getsize(outfile) >= total_expected:
+                        logger.info(f"Successfully downloaded {item.file_name}")
+                        break
+                    else:
+                        raise Exception("Incomplete download, size mismatch.")
+                        
+                except Exception as e:
+                    logger.warning(f"Download chunk failed (attempt {attempt+1}/{max_retries}): {e}")
+                    if attempt == max_retries - 1:
+                        raise Exception(f"Failed to fully download {item.file_name} after {max_retries} attempts. Last error: {e}")
+                    time.sleep(2)
 
     def cancel_kernel(self, kernel_id: str):
         """Cancels and deletes a running or queued kernel on Kaggle."""
