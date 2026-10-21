@@ -95,6 +95,27 @@ class JobProcessor(QThread):
         logger.info(f"[{job_id}] {msg}")
         self.progress_update.emit(job_id, msg)
 
+    def _save_kaggle_log(self, job_id: str, kernel_id: str, bridge):
+        """Fetches Kaggle kernel logs and writes them to a dedicated log file.
+        This is strictly best-effort -- failures here must never affect job processing."""
+        try:
+            log_dir = os.path.join(self.queue_manager.app_data_dir, "applogs", "kaggle_logs")
+            os.makedirs(log_dir, exist_ok=True)
+
+            raw_log = bridge.fetch_kernel_logs(kernel_id)
+
+            log_file = os.path.join(log_dir, f"{job_id}.log")
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.write(f"=== Kaggle Kernel Log for Job {job_id} ===\n")
+                f.write(f"Kernel ID: {kernel_id}\n")
+                f.write(f"Fetched at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(raw_log)
+
+            logger.info(f"[{job_id}] Kaggle kernel log saved to kaggle_logs/{job_id}.log")
+        except Exception as e:
+            logger.warning(f"[{job_id}] Failed to fetch Kaggle kernel log (non-fatal): {e}")
+
     def _handle_abort(self, job_id: str, kernel_id: str, dataset_id: str, temp_dir: str, bridge=None):
         bridge = bridge or self.kaggle_bridge
         self._log(job_id, "Aborting: Cancelling Kaggle kernel and cleaning up local temporary files...")
@@ -148,7 +169,7 @@ class JobProcessor(QThread):
             
         clean_wav = job.get("clean_wav")
         if not clean_wav:
-            clean_wav = os.path.join(temp_dir, "clean_vocals.wav")
+            clean_wav = os.path.join(temp_dir, "clean_vocals.flac")
 
         kernel_id = job.get("kaggle_kernel_id")
         
@@ -267,8 +288,10 @@ class JobProcessor(QThread):
                 try:
                     k_status = bridge.poll_status(kernel_id)
                     if k_status == "COMPLETE":
+                        self._save_kaggle_log(job_id, kernel_id, bridge)
                         break
                     elif k_status == "ERROR":
+                        self._save_kaggle_log(job_id, kernel_id, bridge)
                         raise Exception("Kaggle Kernel failed or was cancelled.")
                     
                     self._log(job_id, f"Kaggle Status: {k_status} (Polling...)")
@@ -312,7 +335,11 @@ class JobProcessor(QThread):
                     self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                     return
                 try:
-                    bridge.download_output(kernel_id, temp_dir)
+                    bridge.download_output(
+                        kernel_id, 
+                        temp_dir,
+                        progress_callback=lambda pct, msg: self._log(job_id, msg)
+                    )
                     download_success = True
                     break
                 except Exception as e:
@@ -336,12 +363,12 @@ class JobProcessor(QThread):
             self._log(job_id, "Padding/Trimming audio and Remuxing video...")
             
             orig_duration = job.get("duration", 0.0)
-            # Make sure clean_wav exists (sometimes it's downloaded as clean_vocals.wav depending on worker)
-            downloaded_wav = os.path.join(temp_dir, "clean_vocals.wav")
+            # Make sure clean_wav exists (sometimes it's downloaded as clean_vocals.flac depending on worker)
+            downloaded_wav = os.path.join(temp_dir, "clean_vocals.flac")
             if not os.path.exists(downloaded_wav):
                 # Check what was downloaded
                 dl_files = os.listdir(temp_dir)
-                raise Exception(f"Expected clean_vocals.wav not found. Files in temp: {dl_files}")
+                raise Exception(f"Expected clean_vocals.flac not found. Files in temp: {dl_files}")
                 
             padded_wav = os.path.join(temp_dir, "clean_padded.wav")
             pad_or_trim_audio(downloaded_wav, orig_duration, padded_wav)

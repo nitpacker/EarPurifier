@@ -1,6 +1,6 @@
 {
-  "id": "verymuch/earpurifier-worker-6a253672",
-  "title": "earpurifier-worker-6a253672",
+  "id": "verymuch/earpurifier-worker-e4007232",
+  "title": "earpurifier-worker-e4007232",
   "code_file": "worker.py",
   "language": "python",
   "kernel_type": "script",
@@ -8,7 +8,8 @@
   "enable_gpu": true,
   "enable_internet": true,
   "dataset_sources": [
-    "verymuch/earpurifier-audio-buffer"
+    "verymuch/earpurifier-audio-buffer-e4007232",
+    "verymuch/earpurifier-cloud-assets-v2"
   ],
   "competition_sources": [],
   "kernel_sources": []

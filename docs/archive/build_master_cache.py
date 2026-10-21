@@ -1,8 +1,16 @@
 import os
+import sys
 import json
 import time
-from src.config_manager import ConfigManager
-import kaggle
+
+try:
+    from config_manager import ConfigManager
+except ImportError:
+    try:
+        from src.config_manager import ConfigManager
+    except ImportError:
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+        from config_manager import ConfigManager
 
 cfg = ConfigManager()
 username = cfg.get("kaggle_username")
@@ -13,7 +21,17 @@ if not username or not api_key:
     exit(1)
 
 os.environ["KAGGLE_USERNAME"] = username
-os.environ["KAGGLE_KEY"] = api_key
+os.environ.pop("KAGGLE_KEY", None)
+os.environ.pop("KAGGLE_API_TOKEN", None)
+if api_key.startswith("KGAT_"):
+    os.environ["KAGGLE_API_TOKEN"] = api_key
+else:
+    os.environ["KAGGLE_KEY"] = api_key
+
+import kaggle
+from kaggle.api.kaggle_api_extended import KaggleApi
+api = KaggleApi()
+api.authenticate()
 
 builder_dir = "master_builder"
 os.makedirs(builder_dir, exist_ok=True)
@@ -32,7 +50,7 @@ kernel_metadata = {
   "competition_sources": [],
   "kernel_sources": []
 }
-with open(os.path.join(builder_dir, "kernel-metadata.json"), "w") as f:
+with open(os.path.join(builder_dir, "kernel-metadata.json"), "w", encoding="utf-8") as f:
     json.dump(kernel_metadata, f, indent=2)
 
 # 2. Write the builder script that runs ON Kaggle
@@ -44,7 +62,11 @@ import shutil
 
 # Inject credentials so the kernel can use Kaggle API
 os.environ["KAGGLE_USERNAME"] = "{username}"
-os.environ["KAGGLE_KEY"] = "{api_key}"
+_key = "{api_key}"
+if _key.startswith("KGAT_"):
+    os.environ["KAGGLE_API_TOKEN"] = _key
+else:
+    os.environ["KAGGLE_KEY"] = _key
 
 CACHE_DIR = "/kaggle/working/cache"
 WHEELS_DIR = os.path.join(CACHE_DIR, "wheels")
@@ -53,8 +75,8 @@ os.makedirs(WHEELS_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 print("1. Building wheels...")
-subprocess.run(["pip", "wheel", "audio-separator[gpu]", "onnxruntime-gpu==1.19.2", "-w", WHEELS_DIR], check=True)
-subprocess.run(["pip", "install", "--no-index", "--find-links=" + WHEELS_DIR, "audio-separator[gpu]", "onnxruntime-gpu==1.19.2"], check=True)
+subprocess.run(["pip", "wheel", "audio-separator[gpu]", "onnxruntime-gpu", "-w", WHEELS_DIR], check=True)
+subprocess.run(["pip", "install", "--no-index", "--find-links=" + WHEELS_DIR, "audio-separator[gpu]", "onnxruntime-gpu"], check=True)
 
 print("2. Downloading models...")
 from audio_separator.separator import Separator
@@ -76,7 +98,7 @@ dataset_metadata = {{
   "id": "{username}/earpurifier-cloud-assets-v2",
   "licenses": [{{"name": "CC0-1.0"}}]
 }}
-with open(os.path.join(CACHE_DIR, "dataset-metadata.json"), "w") as f:
+with open(os.path.join(CACHE_DIR, "dataset-metadata.json"), "w", encoding="utf-8") as f:
     json.dump(dataset_metadata, f, indent=2)
 
 print("4. Uploading dataset to Kaggle...")
@@ -93,18 +115,18 @@ else:
 print("Dataset creation complete!")
 """
 
-with open(os.path.join(builder_dir, "builder.py"), "w") as f:
+with open(os.path.join(builder_dir, "builder.py"), "w", encoding="utf-8") as f:
     f.write(builder_script)
 
 print("Pushing builder kernel to Kaggle...")
-kaggle.api.kernels_push(builder_dir)
+api.kernels_push(builder_dir)
 print(f"Kernel pushed to {username}/earpurifier-cache-builder")
 print("Polling status...")
 
 kernel_id = f"{username}/earpurifier-cache-builder"
 while True:
     try:
-        resp = kaggle.api.kernels_status(kernel_id)
+        resp = api.kernels_status(kernel_id)
         status = str(getattr(resp, "status", str(resp))).lower()
         print(f"Status: {status}")
         if "complete" in status or "error" in status or "cancel" in status:

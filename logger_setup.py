@@ -40,6 +40,17 @@ def setup_logger(config: ConfigManager):
                     except Exception:
                         pass
                         
+        kaggle_log_dir = os.path.join(log_dir, "kaggle_logs")
+        if os.path.exists(kaggle_log_dir):
+            for f in os.listdir(kaggle_log_dir):
+                file_path = os.path.join(kaggle_log_dir, f)
+                if os.path.isfile(file_path):
+                    if os.stat(file_path).st_mtime < current_time - 172800:
+                        try:
+                            os.remove(file_path)
+                        except Exception:
+                            pass
+
         log_file = os.path.join(log_dir, "earpurifier.log")
         # Rotating log every midnight
         fh = TimedRotatingFileHandler(log_file, when="midnight", interval=1, backupCount=2)

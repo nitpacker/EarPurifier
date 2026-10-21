@@ -22,15 +22,20 @@ MODEL_DIR = os.path.join(ASSETS_DIR, "models")
 
 def setup_environment():
     if os.path.exists(WHEELS_DIR) and len(os.listdir(WHEELS_DIR)) > 0:
-        print("Found pre-cached wheels. Installing offline...")
+        print("[CACHE] Found pre-cached wheels. Attempting offline install...")
         try:
-            subprocess.run(["pip", "install", "--no-index", "--find-links=" + WHEELS_DIR, "audio-separator[gpu]", "onnxruntime-gpu==1.19.2"], check=True)
+            subprocess.run(["pip", "install", "--no-index", "--find-links=" + WHEELS_DIR,
+                          "audio-separator[gpu]", "onnxruntime-gpu"], check=True)
+            print("[CACHE] Offline install SUCCESS.")
+            return
         except subprocess.CalledProcessError:
-            print("Offline install failed! Falling back to online install...")
-            subprocess.run(["pip", "install", "audio-separator[gpu]", "onnxruntime-gpu==1.19.2"], check=True)
+            print("[CACHE] WARNING: Cached wheels are STALE or incompatible. Falling back to PyPI...")
     else:
-        print("Pre-cached wheels not found. Installing online...")
-        subprocess.run(["pip", "install", "audio-separator[gpu]", "onnxruntime-gpu==1.19.2"], check=True)
+        print("[CACHE] No pre-cached wheels found.")
+
+    print("[NETWORK] Installing from PyPI (this may take 30-45s)...")
+    subprocess.run(["pip", "install", "audio-separator[gpu]", "onnxruntime-gpu"], check=True)
+    print("[NETWORK] Online install SUCCESS.")
 
 def run_separation():
     # We must import inside the function after installing
@@ -64,23 +69,37 @@ def run_separation():
 
     separator = Separator(
         output_dir=OUTPUT_DIR,
-        output_format="WAV",
+        output_format="FLAC",
         model_file_dir=model_dir
     )
 
     # Load model (will download if not in model_dir)
-    separator.load_model(model_filename="vocals_mel_band_roformer.ckpt")
+    separator.load_model(model_filename="Kim_Vocal_2.onnx")
+
+    # Guard: fail fast if GPU is unavailable rather than silently crawling on CPU
+    import onnxruntime as ort
+    providers = ort.get_available_providers()
+    print(f"[GPU CHECK] Available providers: {providers}")
+    if "CUDAExecutionProvider" not in providers:
+        raise RuntimeError(
+            f"GPU FAILURE: CUDAExecutionProvider not available. "
+            f"Got: {providers}. Aborting to prevent 10x slower CPU fallback."
+        )
 
     # Separate
     output_files = separator.separate(audio_file)
     print(f"Separation complete: {output_files}")
-    
-    # We rename the vocals output to a predictable name: clean_vocals.wav
-    # Output files list usually contains [vocals_file, instrumental_file]
+
+    # We rename the vocals output to a predictable name and delete everything else to save Kaggle backend packaging time
     for f in output_files:
+        filepath = os.path.join(OUTPUT_DIR, f)
         if "(vocals)" in f.lower():
-            shutil.move(os.path.join(OUTPUT_DIR, f), os.path.join(OUTPUT_DIR, "clean_vocals.wav"))
-            break
+            shutil.move(filepath, os.path.join(OUTPUT_DIR, "clean_vocals.flac"))
+        else:
+            try:
+                os.remove(filepath)
+            except Exception as e:
+                print(f"Failed to delete {f}: {e}")
 
 if __name__ == "__main__":
     setup_environment()

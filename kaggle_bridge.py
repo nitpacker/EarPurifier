@@ -44,9 +44,15 @@ class KaggleBridge:
         
         # DEBUG LOGGING
         try:
-            raw_key = os.environ.get("KAGGLE_KEY", "")
-            mask_pass = f"{raw_key[:4]}...{raw_key[-4:]}" if len(raw_key) > 8 else "INVALID_LENGTH"
-            logger.info(f"Kaggle Auth Debug -> Enforced User: '{self.username}', Enforced Key: '{mask_pass}'")
+            raw_key = os.environ.get("KAGGLE_API_TOKEN", "") or os.environ.get("KAGGLE_KEY", "")
+            if raw_key.startswith("KGAT_"):
+                mask_pass = f"KGAT_...{raw_key[-4:]}"
+            elif len(raw_key) > 8:
+                mask_pass = f"{raw_key[:4]}...{raw_key[-4:]}"
+            else:
+                mask_pass = "INVALID_LENGTH"
+            auth_mode = "Bearer (KGAT)" if "KAGGLE_API_TOKEN" in os.environ else "Basic (Legacy Key)"
+            logger.info(f"Kaggle Auth Debug -> User: '{self.username}', Key: '{mask_pass}', Mode: {auth_mode}")
         except Exception as e:
             logger.error(f"Kaggle Auth Debug Failed: {e}")
 
@@ -137,7 +143,7 @@ class KaggleBridge:
         else:
             return "QUEUED"
             
-    def download_output(self, kernel_id: str, download_dir: str):
+    def download_output(self, kernel_id: str, download_dir: str, progress_callback=None):
         """Downloads the output of the completed kernel robustly with resume support."""
         logger.info(f"Downloading output for {kernel_id}...")
         
@@ -157,58 +163,101 @@ class KaggleBridge:
         os.makedirs(download_dir, exist_ok=True)
         
         for item in resp.files:
-            # We only care about the clean_vocals.wav or other audio files
-            if not item.file_name.endswith(".wav"):
+            # We strictly only care about the clean_vocals.flac file. Do not waste user bandwidth downloading instrumentals or logs.
+            if item.file_name != "clean_vocals.flac":
                 continue
                 
             outfile = os.path.join(download_dir, item.file_name)
             url = item.url
             
-            # Robust Resumable Download Loop
-            max_retries = 10
-            for attempt in range(max_retries):
-                try:
-                    headers = {}
-                    file_mode = "wb"
-                    existing_size = 0
+            # Robust Multi-Threaded Resumable Download Loop
+            # Kaggle returns 404 for HEAD requests, so we must use a stream GET to fetch headers
+            with requests.get(url, stream=True, timeout=15) as head_res:
+                total_expected = int(head_res.headers.get("Content-Length", 0))
+                
+            if total_expected == 0:
+                raise Exception("Could not determine file size for download.")
+
+            num_threads = 4
+            import math, threading, concurrent.futures, shutil
+            chunk_size = math.ceil(total_expected / num_threads)
+            
+            progress_lock = threading.Lock()
+            downloaded_bytes = 0
+            last_percent = -1
+            
+            def download_part(part_num, start, end):
+                nonlocal downloaded_bytes, last_percent
+                part_file = f"{outfile}.part{part_num}"
+                expected_size = end - start + 1
+                
+                # If part already exists and is full size, skip
+                if os.path.exists(part_file) and os.path.getsize(part_file) == expected_size:
+                    with progress_lock:
+                        downloaded_bytes += expected_size
+                    return part_file
                     
-                    if os.path.exists(outfile):
-                        existing_size = os.path.getsize(outfile)
-                        if existing_size > 0:
-                            headers["Range"] = f"bytes={existing_size}-"
-                            file_mode = "ab"
+                headers = {"Range": f"bytes={start}-{end}"}
+                for attempt in range(5):
+                    written_so_far = 0
+                    try:
+                        res = requests.get(url, headers=headers, stream=True, timeout=15)
+                        if res.status_code not in (200, 206):
+                            res.raise_for_status()
                             
-                    res = requests.get(url, headers=headers, stream=True, timeout=15)
-                    
-                    # If the server doesn't support Range, it returns 200 and sends from beginning
-                    if res.status_code == 200:
-                        file_mode = "wb"
-                        existing_size = 0
-                    elif res.status_code == 416: # Range not satisfiable (file already fully downloaded)
-                        logger.info(f"File {item.file_name} already fully downloaded.")
-                        break
-                    elif res.status_code != 206:
-                        res.raise_for_status()
+                        with open(part_file, "wb") as f:
+                            for chunk in res.iter_content(chunk_size=1024*1024):
+                                if chunk:
+                                    f.write(chunk)
+                                    chunk_len = len(chunk)
+                                    written_so_far += chunk_len
+                                    with progress_lock:
+                                        downloaded_bytes += chunk_len
+                                        if progress_callback:
+                                            percent = int((downloaded_bytes / total_expected) * 100)
+                                            if percent > last_percent:
+                                                mb_done = downloaded_bytes / (1024 * 1024)
+                                                mb_total = total_expected / (1024 * 1024)
+                                                progress_callback(percent, f"Downloading {item.file_name} [4 Threads] ({mb_done:.1f}MB / {mb_total:.1f}MB)")
+                                                last_percent = percent
                         
-                    total_expected = existing_size + int(res.headers.get("Content-Length", 0))
+                        if os.path.getsize(part_file) == expected_size:
+                            return part_file
+                    except Exception as e:
+                        logger.warning(f"Thread {part_num} attempt {attempt+1} failed: {e}")
+                        with progress_lock:
+                            downloaded_bytes -= written_so_far
+                        time.sleep(2)
+                raise Exception(f"Failed to fully download {item.file_name} part {part_num} after 5 attempts.")
+
+            # Execute threaded downloads
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+                futures = []
+                for i in range(num_threads):
+                    start = i * chunk_size
+                    end = min(start + chunk_size - 1, total_expected - 1)
+                    futures.append(executor.submit(download_part, i, start, end))
                     
-                    with open(outfile, file_mode) as f:
-                        for chunk in res.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                f.write(chunk)
-                                
-                    # Verify if downloaded completely
-                    if os.path.getsize(outfile) >= total_expected:
-                        logger.info(f"Successfully downloaded {item.file_name}")
-                        break
-                    else:
-                        raise Exception("Incomplete download, size mismatch.")
-                        
-                except Exception as e:
-                    logger.warning(f"Download chunk failed (attempt {attempt+1}/{max_retries}): {e}")
-                    if attempt == max_retries - 1:
-                        raise Exception(f"Failed to fully download {item.file_name} after {max_retries} attempts. Last error: {e}")
-                    time.sleep(2)
+                part_files = [f.result() for f in futures]
+                
+            # Stitch files together
+            logger.info(f"Stitching {num_threads} parts for {item.file_name}...")
+            with open(outfile, "wb") as final_f:
+                for pf in part_files:
+                    with open(pf, "rb") as part_f:
+                        shutil.copyfileobj(part_f, final_f, length=1024*1024*5)
+                    os.remove(pf)
+                    
+            logger.info(f"Successfully downloaded and stitched {item.file_name}")
+
+    def fetch_kernel_logs(self, kernel_id: str) -> str:
+        """Fetches the stdout/stderr log from a completed or errored Kaggle kernel.
+        Returns the raw log string, or an error message if retrieval fails."""
+        try:
+            log_output = self.api.kernels_logs(kernel_id)
+            return str(log_output)
+        except Exception as e:
+            return f"[Could not retrieve Kaggle logs: {e}]"
 
     def cancel_kernel(self, kernel_id: str):
         """Cancels and deletes a running or queued kernel on Kaggle."""
