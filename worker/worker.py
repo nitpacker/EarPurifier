@@ -25,7 +25,7 @@ def setup_environment():
         print("[CACHE] Found pre-cached wheels. Attempting offline install...")
         try:
             subprocess.run(["pip", "install", "--no-index", "--find-links=" + WHEELS_DIR,
-                          "audio-separator[gpu]", "onnxruntime-gpu"], check=True)
+                          "audio-separator[gpu]", "onnxruntime-gpu<1.27.0"], check=True)
             print("[CACHE] Offline install SUCCESS.")
             return
         except subprocess.CalledProcessError:
@@ -34,7 +34,7 @@ def setup_environment():
         print("[CACHE] No pre-cached wheels found.")
 
     print("[NETWORK] Installing from PyPI (this may take 30-45s)...")
-    subprocess.run(["pip", "install", "audio-separator[gpu]", "onnxruntime-gpu"], check=True)
+    subprocess.run(["pip", "install", "audio-separator[gpu]", "onnxruntime-gpu<1.27.0"], check=True)
     print("[NETWORK] Online install SUCCESS.")
 
 def run_separation():
@@ -84,6 +84,20 @@ def run_separation():
         raise RuntimeError(
             f"GPU FAILURE: CUDAExecutionProvider not available. "
             f"Got: {providers}. Aborting to prevent 10x slower CPU fallback."
+        )
+
+    # Active session check: ensure the ONNX session actually initialized with CUDA
+    # (Catches missing dynamic libraries like libcublasLt where get_available_providers() succeeds but session falls back to CPU)
+    model_session = getattr(separator.model_instance, "model_run", None)
+    if model_session is not None and hasattr(model_session, "get_providers"):
+        active_providers = model_session.get_providers()
+    else:
+        active_providers = getattr(separator, "providers", providers)
+    print(f"[GPU CHECK] Active session providers: {active_providers}")
+    if "CUDAExecutionProvider" not in active_providers:
+        raise RuntimeError(
+            f"GPU FAILURE: Model session initialized with {active_providers} instead of CUDAExecutionProvider. "
+            f"Aborting to prevent 10x slower CPU fallback."
         )
 
     # Separate

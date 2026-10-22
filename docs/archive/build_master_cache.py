@@ -75,8 +75,8 @@ os.makedirs(WHEELS_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 print("1. Building wheels...")
-subprocess.run(["pip", "wheel", "audio-separator[gpu]", "onnxruntime-gpu", "-w", WHEELS_DIR], check=True)
-subprocess.run(["pip", "install", "--no-index", "--find-links=" + WHEELS_DIR, "audio-separator[gpu]", "onnxruntime-gpu"], check=True)
+subprocess.run(["pip", "wheel", "audio-separator[gpu]", "onnxruntime-gpu<1.27.0", "-w", WHEELS_DIR], check=True)
+subprocess.run(["pip", "install", "--no-index", "--find-links=" + WHEELS_DIR, "audio-separator[gpu]", "onnxruntime-gpu<1.27.0"], check=True)
 
 print("2. Downloading models...")
 from audio_separator.separator import Separator
@@ -102,15 +102,14 @@ with open(os.path.join(CACHE_DIR, "dataset-metadata.json"), "w", encoding="utf-8
     json.dump(dataset_metadata, f, indent=2)
 
 print("4. Uploading dataset to Kaggle...")
-res = subprocess.run(["kaggle", "datasets", "create", "-p", CACHE_DIR, "--dir-mode", "zip"], capture_output=True, text=True)
-if res.returncode != 0:
-    print("Failed to create dataset (it might already exist). Trying version update...")
-    res2 = subprocess.run(["kaggle", "datasets", "version", "-p", CACHE_DIR, "-m", "Updated cache", "--dir-mode", "zip"], capture_output=True, text=True)
+res = subprocess.run(["kaggle", "datasets", "version", "-p", CACHE_DIR, "-m", "Updated cache for Python 3.13 and CUDA 12 (onnxruntime-gpu<1.27.0)", "--dir-mode", "zip"], capture_output=True, text=True)
+print(res.stdout)
+print(res.stderr)
+if res.returncode != 0 or "error" in (res.stderr or "").lower() or "not found" in (res.stdout or "").lower():
+    print("Version update failed or dataset does not exist yet. Trying create...")
+    res2 = subprocess.run(["kaggle", "datasets", "create", "-p", CACHE_DIR, "--dir-mode", "zip"], capture_output=True, text=True)
     print(res2.stdout)
     print(res2.stderr)
-else:
-    print(res.stdout)
-    print(res.stderr)
 
 print("Dataset creation complete!")
 """
