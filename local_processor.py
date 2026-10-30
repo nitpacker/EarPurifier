@@ -30,6 +30,7 @@ class LocalJobProcessor(QThread):
         self.queue_manager = queue_manager
         self.config = config
         self.running = True
+        self.current_process = None
 
     def run(self):
         while self.running:
@@ -56,12 +57,11 @@ class LocalJobProcessor(QThread):
 
     def _log(self, job_id, message):
         logger.info(f"[{job_id}] {message}")
-        progress = self.queue_manager.get_job(job_id).get("progress", 0)
         self.progress_update.emit(job_id, message)
 
     def process_local_job(self, job_id, job):
         if not DependencyManager.has_local_engine():
-            raise Exception("Local Engine is not installed.")
+            raise RuntimeError("Local Engine is not installed.")
 
         temp_dir = os.path.join(self.config.appdata_dir, "temp", job_id)
         os.makedirs(temp_dir, exist_ok=True)
@@ -72,10 +72,11 @@ class LocalJobProcessor(QThread):
             if job.get("duration", 0.0) == 0.0:
                 try:
                     duration = get_duration(video_path)
-                    self.queue_manager.update_job(job_id, {"duration": duration})
-                    job["duration"] = duration
-                except Exception:
-                    pass
+                    if duration > 0.0:
+                        self.queue_manager.update_job(job_id, {"duration": duration})
+                        job["duration"] = duration
+                except Exception as e:
+                    logger.warning(f"Could not determine video duration: {e}")
             
             self._update_status(job_id, "EXTRACTING")
             self._log(job_id, "Extracting lossless FLAC...")
@@ -117,30 +118,28 @@ class LocalJobProcessor(QThread):
             
             self._log(job_id, f"Model {model_name} initialized. Processing audio...")
             
-            kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "bufsize": 1}
+            # Direct stderr into stdout to form a single stream and avoid pipe buffer deadlocks
+            kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
                 
             env = os.environ.copy()
-            try:
-                from .dependency_manager import DependencyManager
-            except ImportError:
-                from dependency_manager import DependencyManager
             env_dir = DependencyManager.get_env_dir()
             env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
                 
-            process = subprocess.Popen(cmd, env=env, **kwargs)
+            self.current_process = subprocess.Popen(cmd, env=env, **kwargs)
+            process = self.current_process
             
             percent_pattern = re.compile(r'(\d{1,3})%')
             last_pct = -1
+            captured_output = []
             
-            captured_stderr = []
             while True:
-                line = process.stderr.readline()
+                line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break
                 if line:
-                    captured_stderr.append(line)
+                    captured_output.append(line)
                     match = percent_pattern.search(line)
                     if match:
                         try:
@@ -148,31 +147,34 @@ class LocalJobProcessor(QThread):
                             if pct != last_pct:
                                 self._log(job_id, f"Processing audio... {pct}%")
                                 last_pct = pct
-                        except:
+                        except Exception:
                             pass
                             
-            stdout_out, _ = process.communicate()
+            process.wait()
+            self.current_process = None
+            full_output = "".join(captured_output)
+
             if process.returncode != 0:
-                full_stderr = "".join(captured_stderr)
-                if "DLL load failed" in full_stderr:
+                if "DLL load failed" in full_output:
                     error_msg = (
                         "Missing Microsoft Visual C++ Redistributable.\n"
                         "Please download and install it from Microsoft:\n"
                         "https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n"
                         "(Restart the app after installing)"
                     )
-                    raise Exception(error_msg)
-                raise Exception(f"AI Engine failed:\n{full_stderr.strip()}\n{stdout_out}")
+                    raise RuntimeError(error_msg)
+                raise RuntimeError(f"AI Engine failed (exit code {process.returncode}):\n{full_output.strip()}")
             
-            # Identify vocal file
+            # Identify vocal file with case-insensitive check
             clean_wav = None
             for f in os.listdir(temp_dir):
-                if f.endswith(".wav") and "(Vocals)" in f:
+                if f.lower().endswith(".wav") and "(vocals)" in f.lower():
                     clean_wav = os.path.join(temp_dir, f)
                     break
                     
             if not clean_wav or not os.path.exists(clean_wav):
-                raise Exception(f"Expected vocal track not found in output directory.\n{res.stdout}\n{res.stderr}")
+                files_found = os.listdir(temp_dir)
+                raise RuntimeError(f"Expected vocal track not found in output directory.\nFiles present: {files_found}\nProcess logs:\n{full_output.strip()}")
                 
             self._update_status(job_id, "REMUXING")
             self._log(job_id, "Padding/Trimming audio and Remuxing video...")
@@ -186,7 +188,7 @@ class LocalJobProcessor(QThread):
             try:
                 os.makedirs(output_folder, exist_ok=True)
             except Exception:
-                pass # We try our best, fallback to letting ffmpeg fail if blocked
+                pass
                 
             base_name = os.path.splitext(os.path.basename(video_path))[0]
             out_video = os.path.join(output_folder, f"{base_name}_purified.mp4")
@@ -199,6 +201,7 @@ class LocalJobProcessor(QThread):
             self.finished_job.emit(job_id)
 
         finally:
+            self.current_process = None
             # Always cleanup the temp directory for this job to prevent disk bloat
             try:
                 if os.path.exists(temp_dir):
@@ -209,3 +212,9 @@ class LocalJobProcessor(QThread):
 
     def stop(self):
         self.running = False
+        if self.current_process is not None:
+            try:
+                self.current_process.terminate()
+                self.current_process.kill()
+            except Exception:
+                pass

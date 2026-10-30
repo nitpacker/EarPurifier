@@ -26,6 +26,7 @@ class JobProcessor(QThread):
         self.api_key = api_key
         self.kaggle_bridge = None
         self.running = True
+        self.current_kernel_id = None
 
     def update_credentials(self, username: str, api_key: str):
         self.username = username
@@ -86,6 +87,12 @@ class JobProcessor(QThread):
 
     def stop(self):
         self.running = False
+        if getattr(self, "current_kernel_id", None) and self.kaggle_bridge:
+            try:
+                self.kaggle_bridge.cancel_kernel(self.current_kernel_id)
+                logger.info(f"Cancelled Kaggle kernel {self.current_kernel_id} on thread stop.")
+            except Exception as e:
+                logger.warning(f"Could not cancel Kaggle kernel on stop: {e}")
 
     def _update_status(self, job_id, status):
         self.queue_manager.update_job(job_id, {"status": status})
@@ -154,10 +161,11 @@ class JobProcessor(QThread):
         if job.get("duration", 0.0) == 0.0:
             try:
                 duration = get_duration(video_path)
-                self.queue_manager.update_job(job_id, {"duration": duration})
-                job["duration"] = duration
-            except Exception:
-                pass
+                if duration > 0.0:
+                    self.queue_manager.update_job(job_id, {"duration": duration})
+                    job["duration"] = duration
+            except Exception as e:
+                logger.warning(f"Could not determine video duration: {e}")
         
         # Use a job-stamped audio filename so Kaggle NEVER serves a stale file from a previous job
         job_tag = job_id[:8]
@@ -172,6 +180,7 @@ class JobProcessor(QThread):
             clean_wav = os.path.join(temp_dir, "clean_vocals.flac")
 
         kernel_id = job.get("kaggle_kernel_id")
+        self.current_kernel_id = kernel_id
         
         # 1. EXTRACTING
         if status in ["PENDING", "EXTRACTING"]:
@@ -270,6 +279,7 @@ class JobProcessor(QThread):
                 self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                 return
                 
+            self.current_kernel_id = kernel_id
             self.queue_manager.update_job(job_id, {"kaggle_kernel_id": kernel_id, "dataset_id": dataset_id})
             status = "PROCESSING_CLOUD"
             
@@ -410,6 +420,7 @@ class JobProcessor(QThread):
             except Exception as e:
                 logger.warning(f"Failed to perform cleanup: {e}")
                 
+            self.current_kernel_id = None
             status = "COMPLETED"
             
         if status == "COMPLETED":

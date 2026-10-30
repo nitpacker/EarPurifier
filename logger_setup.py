@@ -1,7 +1,7 @@
 import os
 import sys
 import logging
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 import time
 try:
     from .config_manager import ConfigManager
@@ -52,7 +52,7 @@ def setup_logger(config: ConfigManager):
                             pass
 
         log_file = os.path.join(log_dir, "earpurifier.log")
-        # Rotating log every midnight
-        fh = TimedRotatingFileHandler(log_file, when="midnight", interval=1, backupCount=2)
+        # Rotating log with 10MB size cap and 3 backups, ensuring disk space is strictly bounded
+        fh = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=3, encoding="utf-8")
         fh.setFormatter(formatter)
         logger.addHandler(fh)

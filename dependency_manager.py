@@ -6,7 +6,10 @@ import urllib.request
 import zipfile
 import tarfile
 import subprocess
+import logging
 from PySide6.QtCore import QThread, Signal
+
+logger = logging.getLogger(__name__)
 
 class DependencyManager:
     @staticmethod
@@ -55,6 +58,23 @@ class DependencyManager:
         return os.path.exists(separator_exe)
 
     @staticmethod
+    def has_nvidia_gpu() -> bool:
+        """Detects whether an NVIDIA GPU with CUDA driver support is present on the host."""
+        if os.name == "nt":
+            sys_root = os.environ.get("SystemRoot", "C:\\Windows")
+            if os.path.exists(os.path.join(sys_root, "System32", "nvcuda.dll")):
+                return True
+        smi = shutil.which("nvidia-smi")
+        if smi:
+            try:
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                res = subprocess.run([smi, "-L"], capture_output=True, text=True, timeout=3, creationflags=creationflags)
+                return res.returncode == 0 and "GPU" in res.stdout
+            except Exception:
+                pass
+        return False
+
+    @staticmethod
     def get_engine_python() -> str:
         ext = ".exe" if os.name == "nt" else ""
         return os.path.join(DependencyManager.get_env_dir(), "python" + ext)
@@ -73,7 +93,6 @@ class FFmpegDownloader(QThread):
     def run(self):
         try:
             self.status_update.emit("Downloading FFmpeg...")
-            # Use GitHub CDN (BtbN) which is backed by Fastly, 100x faster than gyan.dev
             zip_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
             zip_path = os.path.join(DependencyManager.get_appdata_dir(), "ffmpeg.zip")
             
@@ -93,12 +112,10 @@ class FFmpegDownloader(QThread):
                     
                     if total_size > 0:
                         percent = int((downloaded / total_size) * 100)
-                        # CRITICAL FIX: Only emit signal if percent actually changes to prevent UI thread flooding
                         if percent > last_percent:
                             self.progress_update.emit(percent)
                             last_percent = percent
 
-            # Extract
             self.status_update.emit("Extracting FFmpeg binaries...")
             bin_dir = DependencyManager.get_bin_dir()
             with zipfile.ZipFile(zip_path, 'r') as z:
@@ -107,7 +124,6 @@ class FFmpegDownloader(QThread):
                         info.filename = os.path.basename(info.filename)
                         z.extract(info, bin_dir)
 
-            # 5. Cleanup
             os.remove(zip_path)
             self.status_update.emit("FFmpeg installed successfully.")
             self.progress_update.emit(100)
@@ -157,29 +173,43 @@ class EngineDownloader(QThread):
             if not os.path.exists(env_dir):
                 subprocess.run([mamba_exe, "create", "-y", "-p", env_dir, "python=3.11", "pip", "-c", "conda-forge"], **kwargs)
 
-            # 3. Install PyTorch (CPU)
-            self.status_update.emit("Downloading PyTorch CPU (large download, please wait)...")
-            self.progress_update.emit(50)
             pip_exe = os.path.join(env_dir, "Scripts", "pip.exe") if os.name == "nt" else os.path.join(env_dir, "bin", "pip")
-            
-            # We don't check=True here so we can read the error if it fails
-            res = subprocess.run([pip_exe, "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu"], **kwargs)
-            if res.returncode != 0:
-                raise Exception(f"PyTorch install failed: {res.stderr}")
+            has_gpu = DependencyManager.has_nvidia_gpu()
+
+            # 3. Install PyTorch (Adaptive Hardware Acceleration)
+            installed_gpu = False
+            if has_gpu:
+                self.status_update.emit("NVIDIA GPU detected. Installing PyTorch CUDA acceleration...")
+                self.progress_update.emit(45)
+                res = subprocess.run([pip_exe, "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu121"], **kwargs)
+                if res.returncode == 0:
+                    installed_gpu = True
+                else:
+                    logger.warning(f"CUDA PyTorch install failed ({res.stderr}). Falling back to CPU.")
+
+            if not installed_gpu:
+                self.status_update.emit("Installing PyTorch CPU engine...")
+                self.progress_update.emit(50)
+                res = subprocess.run([pip_exe, "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu"], **kwargs)
+                if res.returncode != 0:
+                    raise RuntimeError(f"PyTorch install failed: {res.stderr}")
 
             # 4. Install Audio Separator
             self.status_update.emit("Installing Audio Separator...")
             self.progress_update.emit(85)
-            res = subprocess.run([pip_exe, "install", "audio-separator[cpu]"], **kwargs)
+            sep_pkg = "audio-separator[gpu]" if installed_gpu else "audio-separator[cpu]"
+            res = subprocess.run([pip_exe, "install", sep_pkg], **kwargs)
             if res.returncode != 0:
-                raise Exception(f"Audio Separator install failed: {res.stderr}")
+                raise RuntimeError(f"Audio Separator install failed: {res.stderr}")
 
-            self.status_update.emit("Local AI Engine installed successfully.")
+            engine_type = "GPU Accelerated" if installed_gpu else "CPU"
+            self.status_update.emit(f"Local AI Engine ({engine_type}) installed successfully.")
             self.progress_update.emit(100)
             self.finished_download.emit(True, "Success")
 
         except Exception as e:
             self.finished_download.emit(False, str(e))
+
 
 class ModelDownloader(QThread):
     progress_update = Signal(int)
@@ -193,67 +223,69 @@ class ModelDownloader(QThread):
 
     def run(self):
         try:
-            self.status_update.emit(f"Downloading Model...")
+            self.status_update.emit("Downloading Model...")
             self.progress_update.emit(0)
             
             env_python = DependencyManager.get_engine_python()
             
             script_path = os.path.join(DependencyManager.get_appdata_dir(), "temp_download.py")
-            with open(script_path, "w") as f:
+            with open(script_path, "w", encoding="utf-8") as f:
                 f.write(f'''
 import logging, sys
 from audio_separator.separator import Separator
-# Output logs to stdout so we can separate tqdm (stderr) from logs
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 separator = Separator(model_file_dir=r"{self.models_dir}", log_level=logging.INFO)
 separator.load_model(r"{self.model_name}")
 print("SUCCESS_DOWNLOAD")
 ''')
 
-            kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True, "bufsize": 1}
+            # Direct stderr to stdout to form a single stream and prevent pipe buffer deadlocks
+            kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
                 
             env = os.environ.copy()
             env_dir = DependencyManager.get_env_dir()
-            # Emulate conda activation by prepending necessary paths
             env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
                 
             process = subprocess.Popen([env_python, script_path], env=env, **kwargs)
             
             import re
             percent_pattern = re.compile(r'(\d{1,3})%')
+            captured_output = []
+            last_pct = -1
             
-            captured_stderr = []
             while True:
-                line = process.stderr.readline()
+                line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break
                 if line:
-                    captured_stderr.append(line)
+                    captured_output.append(line)
                     match = percent_pattern.search(line)
                     if match:
                         try:
                             pct = int(match.group(1))
-                            self.progress_update.emit(pct)
-                            self.status_update.emit(f"Downloading... {pct}%")
-                        except:
+                            if pct != last_pct:
+                                self.progress_update.emit(pct)
+                                self.status_update.emit(f"Downloading... {pct}%")
+                                last_pct = pct
+                        except Exception:
                             pass
             
-            stdout_out, _ = process.communicate()
+            process.wait()
             
             try:
                 os.remove(script_path)
-            except:
+            except Exception:
                 pass
                 
-            if "SUCCESS_DOWNLOAD" in stdout_out:
+            full_output = "".join(captured_output)
+            if "SUCCESS_DOWNLOAD" in full_output:
                 self.progress_update.emit(100)
                 self.status_update.emit("Model downloaded successfully!")
                 self.finished_download.emit(True, "Success")
             else:
-                full_stderr = "".join(captured_stderr)
-                if "DLL load failed" in full_stderr:
+                if "DLL load failed" in full_output:
                     error_msg = (
                         "Your Windows system is missing the Microsoft Visual C++ Redistributable, "
                         "which is required to run the AI engine locally.\n\n"
@@ -261,9 +293,9 @@ print("SUCCESS_DOWNLOAD")
                         "https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n"
                         "(Restart the app after installing)"
                     )
-                    raise Exception(error_msg)
+                    raise RuntimeError(error_msg)
                 else:
-                    raise Exception(f"Failed to download model:\n{full_stderr.strip()}")
+                    raise RuntimeError(f"Failed to download model:\n{full_output.strip()}")
                 
         except Exception as e:
             self.finished_download.emit(False, str(e))

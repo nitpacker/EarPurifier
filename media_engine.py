@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import subprocess
 import logging
 from typing import Optional
@@ -35,17 +36,15 @@ def get_duration(media_path: str) -> float:
     ]
     
     try:
-        kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 2.0}
+        kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 15.0}
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
         result = subprocess.run(cmd, **kwargs)
-        return float(result.stdout.strip())
-    except subprocess.CalledProcessError as e:
-        logger.error(f"ffprobe failed: {e.stderr}")
-        raise MediaEngineError(f"Failed to get duration for {media_path}") from e
-    except ValueError as e:
-        logger.error(f"Could not parse duration from ffprobe output: {result.stdout}")
-        raise MediaEngineError(f"Invalid duration format for {media_path}") from e
+        duration_val = float(result.stdout.strip())
+        return max(0.0, duration_val)
+    except (subprocess.SubprocessError, ValueError) as e:
+        logger.error(f"ffprobe failed or timed out for {media_path}: {e}")
+        raise MediaEngineError(f"Failed to get duration for {media_path}: {e}") from e
 
 def extract_audio(video_path: str, output_flac: str) -> str:
     """
@@ -81,10 +80,27 @@ def extract_audio(video_path: str, output_flac: str) -> str:
 def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str) -> str:
     """
     Pads with silence or trims the audio to exactly match target_duration.
+    Guards strictly against 0 or invalid target_duration to avoid truncating audio to 0 seconds.
     """
-    current_duration = get_duration(audio_path)
-    
     ffmpeg_exe = DependencyManager.get_executable("ffmpeg")
+    if not ffmpeg_exe:
+        raise MediaEngineError("ffmpeg is missing. Please restart the app to install it.")
+
+    kwargs = {"capture_output": True, "text": True, "check": True}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+
+    if target_duration <= 0.0:
+        logger.warning(f"Target duration is invalid ({target_duration}s). Skipping pad/trim to prevent audio destruction.")
+        try:
+            cmd = [ffmpeg_exe, "-y", "-i", audio_path, output_path]
+            subprocess.run(cmd, **kwargs)
+            return output_path
+        except Exception:
+            shutil.copyfile(audio_path, output_path)
+            return output_path
+
+    current_duration = get_duration(audio_path)
     cmd = [ffmpeg_exe, "-y", "-i", audio_path]
     
     if current_duration < target_duration:
@@ -94,15 +110,12 @@ def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str)
         # Trim
         cmd.extend(["-t", str(target_duration)])
     else:
-        # Exact match, just copy (though rare)
-        cmd.extend(["-c:a", "copy"])
+        # Exact match
+        pass
         
     cmd.append(output_path)
     
     try:
-        kwargs = {"capture_output": True, "text": True, "check": True}
-        if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
         subprocess.run(cmd, **kwargs)
         return output_path
     except subprocess.CalledProcessError as e:

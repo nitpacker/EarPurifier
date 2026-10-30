@@ -76,14 +76,13 @@ class KaggleBridge:
         metadata = {
             "title": job_slug,
             "id": dataset_id,
-            "licenses": [{"name": "CC0-1.0"}],
-            "isPrivate": False
+            "licenses": [{"name": "CC0-1.0"}]
         }
         with open(os.path.join(temp_dir, "dataset-metadata.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
             
         logger.info(f"Creating unique job dataset {dataset_id}...")
-        resp = self.api.dataset_create_new(folder=temp_dir, dir_mode="zip", quiet=True)
+        resp = self.api.dataset_create_new(folder=temp_dir, dir_mode="zip", quiet=True, public=False)
         # Kaggle sometimes returns an empty string for error even on success
         if resp and getattr(resp, "error", None):
             error_msg = getattr(resp, "error")

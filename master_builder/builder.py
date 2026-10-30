@@ -1,12 +1,34 @@
-
 import os
 import subprocess
 import json
 import shutil
 
 # Inject credentials so the kernel can use Kaggle API
-os.environ["KAGGLE_USERNAME"] = "verymuch"
-_key = "KGAT_35f2a305979b8b05d4f3ac3a2eb0aabe"
+def load_dotenv():
+    search_dirs = [
+        os.getcwd(),
+        os.path.dirname(os.path.abspath(__file__)),
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ]
+    for d in search_dirs:
+        env_file = os.path.join(d, ".env")
+        if os.path.isfile(env_file):
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            break
+
+load_dotenv()
+
+username = os.environ.get("KAGGLE_USERNAME")
+_key = os.environ.get("KAGGLE_API_TOKEN") or os.environ.get("KAGGLE_KEY")
+if not username or not _key:
+    raise RuntimeError("Missing KAGGLE_USERNAME or KAGGLE_API_TOKEN/KAGGLE_KEY in environment or .env file.")
+
+os.environ["KAGGLE_USERNAME"] = username
 if _key.startswith("KGAT_"):
     os.environ["KAGGLE_API_TOKEN"] = _key
 else:
@@ -39,7 +61,7 @@ for m in models_to_download:
 print("3. Generating dataset metadata...")
 dataset_metadata = {
   "title": "earpurifier-cloud-assets-v2",
-  "id": "verymuch/earpurifier-cloud-assets-v2",
+  "id": f"{username}/earpurifier-cloud-assets-v2",
   "licenses": [{"name": "CC0-1.0"}]
 }
 with open(os.path.join(CACHE_DIR, "dataset-metadata.json"), "w", encoding="utf-8") as f:

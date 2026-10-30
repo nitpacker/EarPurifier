@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect, QStackedWidget, QSizePolicy, QToolButton
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QRectF
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import (
     QFont, QColor, QLinearGradient, QPalette, QIcon, QPixmap,
     QPainter, QPainterPath, QPen, QBrush
@@ -1890,10 +1891,12 @@ class MainWindow(QMainWindow):
             self.local_thread.start()
 
     def add_video(self, mode: str):
-        if mode == "Cloud (Kaggle)" and not self.config.get("kaggle_username"):
-            QMessageBox.warning(self, "Missing Credentials", "Please set your Kaggle Username and API Key in Settings first.")
-            self.open_settings()
-            return
+        if mode == "Cloud (Kaggle)":
+            self.init_threads()
+            if not self.config.get("kaggle_username"):
+                QMessageBox.warning(self, "Missing Credentials", "Please set your Kaggle Username and API Key in Settings first.")
+                self.open_settings()
+                return
 
         # Pre-flight check: Verify and create output directory upfront to catch Windows Defender / permission issues early!
         try:
@@ -1928,21 +1931,84 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Job Error", f"An error occurred in job:\n{error_msg}")
 
     def closeEvent(self, event):
-        if hasattr(self, 'cloud_thread'):
+        if hasattr(self, 'cloud_thread') and self.cloud_thread is not None:
             self.cloud_thread.stop()
-        if hasattr(self, 'local_thread'):
+        if hasattr(self, 'local_thread') and self.local_thread is not None:
             self.local_thread.stop()
+
+        for t_name in ['cloud_thread', 'local_thread']:
+            thread = getattr(self, t_name, None)
+            if thread and thread.isRunning():
+                if not thread.wait(2000):
+                    logger.warning(f"{t_name} did not exit within timeout; terminating.")
+                    try:
+                        thread.terminate()
+                        thread.wait(500)
+                    except Exception:
+                        pass
         event.accept()
+
+
+def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    import traceback
+    err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logging.critical(f"Uncaught exception:\n{err_msg}")
+    
+    if QApplication.instance():
+        try:
+            QMessageBox.critical(
+                None,
+                "Unexpected Error - EarPurifier",
+                f"An unexpected error occurred:\n\n{exc_value}\n\nPlease check the application log for details."
+            )
+        except Exception:
+            pass
+
+sys.excepthook = handle_uncaught_exception
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # ── Single-Instance Enforcement via Qt Local IPC ──
+    server_name = "EarPurifier_SingleInstance_IPC"
+    socket = QLocalSocket()
+    socket.connectToServer(server_name)
+    if socket.waitForConnected(500):
+        # A primary instance is already running. Signal it to activate its window and exit.
+        socket.write(b"ACTIVATE\n")
+        socket.flush()
+        socket.waitForBytesWritten(500)
+        socket.disconnectFromServer()
+        sys.exit(0)
+
+    # Clean up any stale pipe registration from an earlier abrupt crash
+    QLocalServer.removeServer(server_name)
+    local_server = QLocalServer()
+    if not local_server.listen(server_name):
+        logging.warning(f"Could not bind single-instance server: {local_server.errorString()}")
+
     logo_ico = get_asset_path("logo.ico")
     logo_png = get_asset_path("logo.png")
     if os.path.exists(logo_ico):
         app.setWindowIcon(QIcon(logo_ico))
     elif os.path.exists(logo_png):
         app.setWindowIcon(QIcon(logo_png))
+
     window = MainWindow()
+
+    def handle_ipc_activation():
+        client = local_server.nextPendingConnection()
+        if client:
+            window.showNormal()
+            window.raise_()
+            window.activateWindow()
+            client.deleteLater()
+
+    local_server.newConnection.connect(handle_ipc_activation)
+
     window.show()
     sys.exit(app.exec())
