@@ -4,8 +4,6 @@
 
 **State-of-the-Art AI Audio Isolation & Vocal Purification Studio**
 
-[![Release](https://img.shields.io/badge/Release-v0.0.1-10b981?style=for-the-badge&logo=github&logoColor=white)](https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.1)
-[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/PySide6-Qt%206-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://wiki.qt.io/Qt_for_Python)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-Hardware%20Accelerated-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![Kaggle T4](https://img.shields.io/badge/Kaggle-T4%20Cloud%20GPU-20BEFF?style=for-the-badge&logo=kaggle&logoColor=white)](https://www.kaggle.com/)
