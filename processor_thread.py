@@ -93,6 +93,23 @@ class JobProcessor(QThread):
                     self.queue_manager.update_job(job_id, {"status": "ERROR"})
                     self.error_job.emit(job_id, str(e))
                     self.status_update.emit(job_id, "ERROR")
+                # Immediately clean up cloud dataset and temp directory on error
+                dataset_to_clean = getattr(self, "current_dataset_id", None) or job.get("dataset_id")
+                if dataset_to_clean and self.kaggle_bridge:
+                    try:
+                        self.kaggle_bridge.delete_dataset_with_retry(dataset_to_clean, max_retries=2, initial_delay=1.0)
+                    except Exception as err:
+                        logger.warning(f"Failed to delete dataset on job error: {err}")
+                temp_dir = os.path.join(self.queue_manager.app_data_dir, "temp", job_id)
+                if os.path.exists(temp_dir):
+                    try:
+                        import shutil
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+            finally:
+                self.current_kernel_id = None
+                self.current_dataset_id = None
 
     def stop(self):
         self.running = False
@@ -213,6 +230,7 @@ class JobProcessor(QThread):
         kernel_id = job.get("kaggle_kernel_id")
         self.current_kernel_id = kernel_id
         dataset_id = job.get("dataset_id")
+        self.current_dataset_id = dataset_id
 
         if is_aborted():
             self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
@@ -303,6 +321,7 @@ class JobProcessor(QThread):
             if not upload_success:
                 raise Exception("Failed to upload audio to Kaggle after 5 attempts.")
             job["dataset_id"] = dataset_id
+            self.current_dataset_id = dataset_id
             
             if is_aborted():
                 self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)

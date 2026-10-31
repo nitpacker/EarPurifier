@@ -188,6 +188,17 @@ class TestAbortionLifecycle(unittest.TestCase):
         self.assertLess(elapsed, 2.0, "FFmpeg abortable must terminate within ~100-200ms")
         t.join()
 
+    def test_run_ffmpeg_abortable_drains_pipe_without_deadlock(self):
+        """_run_ffmpeg_abortable continuously drains stderr to prevent 64KB OS buffer deadlock."""
+        # 50,000 lines of output to stderr (~1 MB, well above 64 KB OS pipe buffer)
+        cmd = [sys.executable, "-c", "import sys; [sys.stderr.write('progress chunk %d\\n' % i) for i in range(50000)]"]
+        start_t = time.time()
+        result = _run_ffmpeg_abortable(cmd)
+        elapsed = time.time() - start_t
+        self.assertEqual(result.returncode, 0)
+        self.assertLess(elapsed, 5.0, "50,000 lines must be drained without pipe buffer deadlock")
+        self.assertIn("progress chunk 49999", result.stderr)
+
     # ── 5. Kaggle Output Downloader Abortion ─────────────────────────────────
 
     def test_download_output_stops_on_abort_and_purges_parts(self):

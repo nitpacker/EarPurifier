@@ -48,6 +48,15 @@ class LocalJobProcessor(QThread):
                         logger.exception(f"Error processing local job {job_id}")
                         self._update_status(job_id, "ERROR")
                         self.error_job.emit(job_id, str(e))
+                    temp_dir = os.path.join(self.config.appdata_dir, "temp", job_id)
+                    if os.path.exists(temp_dir):
+                        try:
+                            import shutil
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+                finally:
+                    self.current_process = None
             else:
                 for _ in range(20):
                     if not self.running:
