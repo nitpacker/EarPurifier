@@ -135,6 +135,11 @@ class LocalJobProcessor(QThread):
             env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
                 
             self.current_process = subprocess.Popen(cmd, env=env, **kwargs)
+            try:
+                from .process_tracker import register_process, unregister_process
+            except ImportError:
+                from process_tracker import register_process, unregister_process
+            register_process(self.current_process)
             process = self.current_process
             
             percent_pattern = re.compile(r'(\d{1,3})%')
@@ -208,6 +213,12 @@ class LocalJobProcessor(QThread):
             self.finished_job.emit(job_id)
 
         finally:
+            if self.current_process is not None:
+                try:
+                    from process_tracker import unregister_process
+                    unregister_process(self.current_process)
+                except Exception:
+                    pass
             self.current_process = None
             # Always cleanup the temp directory for this job to prevent disk bloat
             try:
@@ -221,7 +232,12 @@ class LocalJobProcessor(QThread):
         self.running = False
         if self.current_process is not None:
             try:
-                self.current_process.terminate()
+                from process_tracker import kill_process_tree
+                kill_process_tree(self.current_process.pid)
                 self.current_process.kill()
             except Exception:
                 pass
+        self.requestInterruption()
+        if self.isRunning():
+            self.terminate()
+            self.wait(100)

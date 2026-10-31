@@ -93,7 +93,10 @@ class ConfigManager:
             "local_model": "SOTA (RoFormer) - Requires High-End GPU",
             "processing_mode": "Cloud (Kaggle)", # or "Local (GPU)"
             "delete_output_files": False,
-            "language": "ar"
+            "language": "ar",
+            "check_updates": True,
+            "ignored_release_tag": "",
+            "last_update_check": ""
         }
         self.config = self.load_config()
 

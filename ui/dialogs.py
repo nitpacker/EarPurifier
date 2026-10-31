@@ -4,7 +4,8 @@ from PySide6.QtWidgets import (
     QLineEdit, QComboBox, QCheckBox, QFormLayout, QFrame,
     QFileDialog, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 
 from .theme import (
     Theme, ThemeMode,
@@ -23,6 +24,11 @@ try:
 except ImportError:
     from src.i18n import t, is_rtl, format_delete_confirm_msg
 
+try:
+    from update_checker import GitHubUpdateChecker
+except ImportError:
+    from src.update_checker import GitHubUpdateChecker
+
 
 # ─── Settings Dialog (Modern Elevated Studio Cards) ───────────────────────────
 
@@ -33,6 +39,9 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(t("settings_window_title"))
         self.setMinimumWidth(500)
         self._theme_mode = Theme.get_mode()
+        self.update_thread = None
+        self._pending_download_url = ""
+        self._update_is_download_ready = False
 
         current_lang = self.config.get("language", "ar")
         rtl_mode = is_rtl(current_lang)
@@ -187,6 +196,28 @@ class SettingsDialog(QDialog):
         log_row.addWidget(self.switch_logging)
         form_general.addRow("", log_row)
 
+        # Auto-Update Toggle Switch
+        upd_row = QHBoxLayout()
+        lbl_upd = QLabel(t("setting_check_updates"))
+        self.switch_check_updates = ModernToggleSwitch(self.config.get("check_updates", True))
+        upd_row.addWidget(lbl_upd, 1)
+        upd_row.addWidget(self.switch_check_updates)
+        form_general.addRow("", upd_row)
+
+        # Manual Check Button & Inline Status
+        chk_row = QHBoxLayout()
+        chk_row.setSpacing(10)
+        self.btn_check_now = QPushButton(t("btn_check_updates_now"))
+        self.btn_check_now.setCursor(Qt.PointingHandCursor)
+        self._apply_check_btn_style(is_download_mode=False)
+        self.btn_check_now.clicked.connect(self.on_check_or_download_clicked)
+        chk_row.addWidget(self.btn_check_now)
+
+        self.lbl_update_status = QLabel("")
+        self.lbl_update_status.setStyleSheet(f"color: {Theme.get_token('TEXT_MUTED')}; font-size: 11px;")
+        chk_row.addWidget(self.lbl_update_status, 1)
+        form_general.addRow("", chk_row)
+
         cg_layout.addLayout(form_general)
         layout.addWidget(self.card_general)
 
@@ -196,6 +227,98 @@ class SettingsDialog(QDialog):
         self.btn_save.setStyleSheet(get_primary_button_qss(self._theme_mode))
         self.btn_save.clicked.connect(self.accept)
         layout.addWidget(self.btn_save)
+
+    def _apply_check_btn_style(self, is_download_mode: bool = False):
+        if is_download_mode:
+            self.btn_check_now.setText(t("btn_download_update"))
+            self.btn_check_now.setStyleSheet(get_primary_button_qss(self._theme_mode))
+        else:
+            self.btn_check_now.setText(t("btn_check_updates_now"))
+            self.btn_check_now.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {Theme.get_token('CARD_BG')};
+                    color: {Theme.get_token('TEXT_BODY')};
+                    border: 1px solid {Theme.get_token('CARD_BORDER')};
+                    padding: 6px 14px;
+                    border-radius: 6px;
+                    font-weight: 600;
+                    font-size: 11.5px;
+                }}
+                QPushButton:hover {{
+                    border-color: {Theme.get_token('ACCENT_EMERALD')};
+                }}
+                QPushButton:disabled {{
+                    color: {Theme.get_token('TEXT_FAINT')};
+                }}
+            """)
+
+    def on_check_or_download_clicked(self):
+        if self._update_is_download_ready and self._pending_download_url:
+            QDesktopServices.openUrl(QUrl(self._pending_download_url))
+            return
+        self.on_manual_check_updates()
+
+    def on_manual_check_updates(self):
+        self._update_is_download_ready = False
+        self._apply_check_btn_style(is_download_mode=False)
+        self.btn_check_now.setEnabled(False)
+        self.lbl_update_status.setText(t("update_status_checking"))
+        self.lbl_update_status.setStyleSheet(f"color: {Theme.get_token('TEXT_MUTED')}; font-size: 11px;")
+
+        self.update_thread = GitHubUpdateChecker(config=self.config, force=True, parent=None)
+        self.update_thread.sig_update_available.connect(self.on_update_available_detected)
+        self.update_thread.sig_check_finished.connect(self.on_manual_check_finished)
+        self.update_thread.start()
+
+    def on_update_available_detected(self, version: str, notes, html_url: str, download_url: str):
+        self._pending_download_url = download_url or html_url
+
+    def on_manual_check_finished(self, success: bool, status_code: str, message: str):
+        self.btn_check_now.setEnabled(True)
+        if success:
+            if status_code == "update_available":
+                self._update_is_download_ready = True
+                self._apply_check_btn_style(is_download_mode=True)
+                self.lbl_update_status.setText(t("update_status_available", version=message))
+                self.lbl_update_status.setStyleSheet(f"color: {Theme.get_token('ACCENT_EMERALD')}; font-size: 11px; font-weight: 700;")
+            else:
+                self._update_is_download_ready = False
+                self._apply_check_btn_style(is_download_mode=False)
+                self.lbl_update_status.setText(t("update_status_latest", version=message))
+                self.lbl_update_status.setStyleSheet(f"color: {Theme.get_token('TEXT_MUTED')}; font-size: 11px;")
+        else:
+            self._update_is_download_ready = False
+            self._apply_check_btn_style(is_download_mode=False)
+            self.lbl_update_status.setText(t("update_status_error"))
+            self.lbl_update_status.setStyleSheet(f"color: {Theme.get_token('ACCENT_RED')}; font-size: 11px;")
+
+    def _cleanup_update_thread(self):
+        if hasattr(self, 'update_thread') and self.update_thread:
+            try:
+                self.update_thread.sig_update_available.disconnect()
+            except Exception:
+                pass
+            try:
+                self.update_thread.sig_check_finished.disconnect()
+            except Exception:
+                pass
+            if hasattr(self.update_thread, 'stop'):
+                self.update_thread.stop()
+            elif self.update_thread.isRunning():
+                self.update_thread.terminate()
+                self.update_thread.wait(100)
+
+    def done(self, r):
+        self._cleanup_update_thread()
+        super().done(r)
+
+    def closeEvent(self, event):
+        self._cleanup_update_thread()
+        super().closeEvent(event)
+
+    def reject(self):
+        self._cleanup_update_thread()
+        super().reject()
 
     def browse_output(self):
         folder = QFileDialog.getExistingDirectory(self, t("settings_browse_title"))
@@ -208,6 +331,7 @@ class SettingsDialog(QDialog):
         self.config.set("output_folder", self.inp_out.text().strip())
         self.config.set("local_model", self.cmb_model.currentText())
         self.config.set("enable_logging", self.switch_logging.isChecked())
+        self.config.set("check_updates", self.switch_check_updates.isChecked())
         self.config.set("language", self.cmb_lang.currentData())
         return True
 

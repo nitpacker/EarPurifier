@@ -38,7 +38,7 @@ class JobProcessor(QThread):
                 from kaggle_bridge import KaggleBridge
             self.kaggle_bridge = KaggleBridge(self.username, self.api_key)
             logger.info(f"Re-initialized KaggleBridge with new user: {self.username}")
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             logger.error(f"Failed to re-initialize KaggleBridge: {e}")
 
     def run(self):
@@ -48,7 +48,7 @@ class JobProcessor(QThread):
             except ImportError:
                 from kaggle_bridge import KaggleBridge
             self.kaggle_bridge = KaggleBridge(self.username, self.api_key)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             logger.error(f"Failed to initialize KaggleBridge: {e}")
             return
             
@@ -93,6 +93,10 @@ class JobProcessor(QThread):
                 logger.info(f"Cancelled Kaggle kernel {self.current_kernel_id} on thread stop.")
             except Exception as e:
                 logger.warning(f"Could not cancel Kaggle kernel on stop: {e}")
+        self.requestInterruption()
+        if self.isRunning():
+            self.terminate()
+            self.wait(100)
 
     def _update_status(self, job_id, status):
         self.queue_manager.update_job(job_id, {"status": status})
@@ -326,7 +330,8 @@ class JobProcessor(QThread):
                     if "Kernel failed" in str(e):
                         raise
                     retries += 1
-                    if retries > 5:
+                    logger.warning(f"Network error while polling Kaggle (attempt {retries}/60): {e}")
+                    if retries > 60:
                         self._update_status(job_id, "ERROR")
                         raise Exception("Network retries exhausted while polling Kaggle.")
                     for _ in range(60):

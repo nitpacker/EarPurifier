@@ -22,6 +22,11 @@ try:
 except ImportError:
     from src.i18n import t, is_rtl
 
+try:
+    from update_checker import APP_VERSION
+except ImportError:
+    from src.update_checker import APP_VERSION
+
 
 # ─── 1. Clean '✕' Mark Button ──────────────────────────────────────────────────
 
@@ -124,15 +129,20 @@ class SidebarLogo(QWidget):
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(logo_rect, 8, 8)
 
-        # 2. Version Pill ("v2.0")
-        pill_rect = QRectF((self.width() - 34) / 2, 44, 34, 13)
+        # 2. Dynamic Version Pill (e.g. "v0.0.1")
+        font = QFont("Consolas", 8, QFont.Bold)
+        painter.setFont(font)
+        ver_text = f"v{APP_VERSION}"
+        text_w = painter.fontMetrics().horizontalAdvance(ver_text)
+        pill_w = max(36, text_w + 8)
+        pill_rect = QRectF((self.width() - pill_w) / 2, 44, pill_w, 13)
+
         painter.setBrush(QColor("#182e23"))
         painter.setPen(QPen(QColor("#244837"), 1))
         painter.drawRoundedRect(pill_rect, 4, 4)
 
         painter.setPen(QColor("#95daa3"))
-        painter.setFont(QFont("Consolas", 8, QFont.Bold))
-        painter.drawText(pill_rect, Qt.AlignCenter, "v2.0")
+        painter.drawText(pill_rect, Qt.AlignCenter, ver_text)
 
 
 # ─── 4. Sidebar Rail Navigation Button ────────────────────────────────────────

@@ -132,6 +132,15 @@ class FFmpegDownloader(QThread):
         except Exception as e:
             self.finished_download.emit(False, str(e))
 
+    def stop(self):
+        self.requestInterruption()
+        if self.isRunning():
+            try:
+                self.terminate()
+                self.wait(100)
+            except Exception:
+                pass
+
 
 class EngineDownloader(QThread):
     progress_update = Signal(int)
@@ -210,6 +219,15 @@ class EngineDownloader(QThread):
         except Exception as e:
             self.finished_download.emit(False, str(e))
 
+    def stop(self):
+        self.requestInterruption()
+        if self.isRunning():
+            try:
+                self.terminate()
+                self.wait(100)
+            except Exception:
+                pass
+
 
 class ModelDownloader(QThread):
     progress_update = Signal(int)
@@ -220,6 +238,23 @@ class ModelDownloader(QThread):
         super().__init__()
         self.model_name = model_name
         self.models_dir = models_dir
+        self.process = None
+
+    def stop(self):
+        if getattr(self, 'process', None):
+            try:
+                from process_tracker import kill_process_tree
+                kill_process_tree(self.process.pid)
+                self.process.kill()
+            except Exception:
+                pass
+        self.requestInterruption()
+        if self.isRunning():
+            try:
+                self.terminate()
+                self.wait(100)
+            except Exception:
+                pass
 
     def run(self):
         try:
@@ -248,7 +283,13 @@ print("SUCCESS_DOWNLOAD")
             env_dir = DependencyManager.get_env_dir()
             env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
                 
-            process = subprocess.Popen([env_python, script_path], env=env, **kwargs)
+            self.process = subprocess.Popen([env_python, script_path], env=env, **kwargs)
+            process = self.process
+            try:
+                from process_tracker import register_process, unregister_process
+                register_process(process)
+            except Exception:
+                pass
             
             import re
             percent_pattern = re.compile(r'(\d{1,3})%')
@@ -273,6 +314,11 @@ print("SUCCESS_DOWNLOAD")
                             pass
             
             process.wait()
+            try:
+                from process_tracker import unregister_process
+                unregister_process(process)
+            except Exception:
+                pass
             
             try:
                 os.remove(script_path)

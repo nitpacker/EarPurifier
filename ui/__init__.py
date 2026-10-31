@@ -19,6 +19,7 @@ from .queue_widgets import (
 from .dialogs import SettingsDialog, DeleteConfirmDialog, AudioTrackSelectDialog
 from .job_widget import JobWidget
 from .job_queue_section import JobQueueSection
+from .update_banner import UpdateBannerWidget
 from .main_window import MainWindow
 
 __all__ = [
@@ -35,5 +36,5 @@ __all__ = [
     "ModernToggleSwitch", "StatusGroupHeader",
     "SegmentedPillSwitcher", "FloatingBatchDock", "DropZoneWidget",
     "SettingsDialog", "DeleteConfirmDialog", "AudioTrackSelectDialog",
-    "JobWidget", "JobQueueSection", "MainWindow"
+    "JobWidget", "JobQueueSection", "UpdateBannerWidget", "MainWindow"
 ]

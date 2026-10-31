@@ -29,6 +29,5 @@ Thumbs.db
 .env
 .test_env/
 .test_appdata/
-master_builder/builder.py
 
 

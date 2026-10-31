@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QFrame, QGridLayout,
     QGraphicsBlurEffect, QStackedWidget, QFileDialog, QDialog, QApplication
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon, QFont
 
 from .theme import (
@@ -20,6 +20,12 @@ from .components import (
 from .dialogs import SettingsDialog, AudioTrackSelectDialog
 from .job_queue_section import JobQueueSection
 from .overlay_widgets import DownloadOverlayWidget
+from .update_banner import UpdateBannerWidget
+
+try:
+    from update_checker import GitHubUpdateChecker
+except ImportError:
+    from src.update_checker import GitHubUpdateChecker
 
 try:
     from config_manager import ConfigManager
@@ -109,9 +115,13 @@ class MainWindow(QMainWindow):
                 pass
 
         self.queue_manager = QueueManager()
+        self.update_checker = None
 
         self.init_ui()
         self.init_threads()
+
+        # Non-blocking auto-update check delayed 2.5s for instant startup
+        QTimer.singleShot(2500, self.start_auto_update_check)
 
     def init_ui(self):
         self.setWindowTitle(t("app_title"))
@@ -175,6 +185,16 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.rail)
 
         # ── 2. Main Stacked Workspace Canvas ──
+        self.workspace_container = QWidget()
+        self.workspace_container.setStyleSheet("background: transparent; border: none;")
+        workspace_layout = QVBoxLayout(self.workspace_container)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+
+        self.update_banner = UpdateBannerWidget(self.config, self)
+        self.update_banner.setVisible(False)
+        workspace_layout.addWidget(self.update_banner)
+
         self.stack = QStackedWidget()
 
         self.cloud_section = JobQueueSection("Cloud (Kaggle)", self.queue_manager, self.config)
@@ -186,7 +206,8 @@ class MainWindow(QMainWindow):
         self.setup_local_tab()
         self.stack.addWidget(self.tab_local)
 
-        root_layout.addWidget(self.stack, 1)
+        workspace_layout.addWidget(self.stack, 1)
+        root_layout.addWidget(self.workspace_container, 1)
 
         self.apply_theme(self.theme_mode)
         self.switch_view(0)
@@ -229,6 +250,8 @@ class MainWindow(QMainWindow):
             self.cloud_section.apply_theme(mode)
         if hasattr(self, 'local_section'):
             self.local_section.apply_theme(mode)
+        if hasattr(self, 'update_banner'):
+            self.update_banner.apply_theme(mode)
         set_native_window_theme(self, mode == ThemeMode.DARK)
 
     def showEvent(self, event):
@@ -278,6 +301,8 @@ class MainWindow(QMainWindow):
             self.cloud_section.retranslate_ui()
         if hasattr(self, 'local_section'):
             self.local_section.retranslate_ui()
+        if hasattr(self, 'update_banner'):
+            self.update_banner.retranslate_ui(new_lang)
 
     def check_ffmpeg(self):
         if not DependencyManager.has_ffmpeg():
@@ -509,20 +534,51 @@ class MainWindow(QMainWindow):
     def on_job_error(self, jid: str, error_msg: str):
         QMessageBox.critical(self, t("alert_job_err_title"), t("alert_job_err_msg", error=error_msg))
 
-    def closeEvent(self, event):
-        if hasattr(self, 'cloud_thread') and self.cloud_thread is not None:
-            self.cloud_thread.stop()
-        if hasattr(self, 'local_thread') and self.local_thread is not None:
-            self.local_thread.stop()
+    def start_auto_update_check(self):
+        """Spawns non-blocking GitHub release check in background thread."""
+        if not self.config.get("check_updates", True):
+            return
+        self.update_checker = GitHubUpdateChecker(config=self.config, force=False, parent=None)
+        self.update_checker.sig_update_available.connect(self.on_update_available)
+        self.update_checker.start()
 
-        for t_name in ['cloud_thread', 'local_thread']:
-            thread = getattr(self, t_name, None)
-            if thread and thread.isRunning():
-                if not thread.wait(2000):
-                    logger.warning(f"{t_name} did not exit within timeout; terminating.")
-                    try:
-                        thread.terminate()
-                        thread.wait(500)
-                    except Exception:
-                        pass
+    def on_update_available(self, latest_version: str, release_notes: str, html_url: str, download_url: str):
+        """Displays update banner when newer version is detected."""
+        self.update_banner.show_update(latest_version, release_notes, html_url, download_url)
+
+    def closeEvent(self, event):
+        has_active = any(
+            j.get("status") in ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "PROCESSING_LOCAL", "DOWNLOADING", "REMUXING"]
+            for j in self.queue_manager.get_all_jobs().values()
+        )
+        if has_active:
+            from .overlay_widgets import CloseActiveJobDialog
+            dlg = CloseActiveJobDialog(self)
+            if dlg.exec() != QDialog.Accepted:
+                event.ignore()
+                return
+
+        for jid, j in self.queue_manager.get_all_jobs().items():
+            if j.get("status") in ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "PROCESSING_LOCAL", "DOWNLOADING", "REMUXING"]:
+                self.queue_manager.abort_job(jid)
+
+        try:
+            from update_checker import stop_all_active_checkers
+            stop_all_active_checkers()
+        except Exception:
+            pass
+
+        try:
+            from process_tracker import cleanup_all_subprocesses, terminate_qt_threads
+            threads = [
+                getattr(self, n, None) for n in
+                ['cloud_thread', 'local_thread', 'ffmpeg_thread', 'engine_thread', 'model_thread', 'update_checker']
+            ]
+            terminate_qt_threads([t for t in threads if t is not None], timeout_ms=500)
+            cleanup_all_subprocesses()
+        except Exception:
+            pass
+
         event.accept()
+        if QApplication.instance():
+            QApplication.instance().quit()

@@ -47,7 +47,7 @@ def get_duration(media_path: str) -> float:
     ]
     
     try:
-        kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 15.0}
+        kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 180.0}
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
         result = subprocess.run(cmd, **kwargs)
@@ -87,7 +87,7 @@ def probe_container(media_path: str) -> dict:
         media_path
     ]
 
-    kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 10.0}
+    kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 180.0}
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
 
@@ -204,6 +204,9 @@ def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str)
         # Exact match
         pass
         
+    if output_path.lower().endswith(".wav"):
+        cmd.extend(["-rf64", "auto"])
+
     cmd.append(output_path)
     
     try:

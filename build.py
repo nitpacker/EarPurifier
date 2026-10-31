@@ -58,6 +58,9 @@ def main():
         "--hidden-import", "PySide6",
         "--hidden-import", "ui",
         "--hidden-import", "i18n",
+        "--hidden-import", "update_checker",
+        "--hidden-import", "process_tracker",
+        "--hidden-import", "packaging",
         "--hidden-import", "text_unidecode",
         main_script
     ]

@@ -82,7 +82,7 @@ def main():
         socket.flush()
         socket.waitForBytesWritten(500)
         socket.disconnectFromServer()
-        sys.exit(0)
+        os._exit(0)
 
     # Clean up any stale pipe registration from an earlier abrupt crash
     QLocalServer.removeServer(server_name)
@@ -104,15 +104,42 @@ def main():
     def handle_ipc_activation():
         client = local_server.nextPendingConnection()
         if client:
-            window.showNormal()
-            window.raise_()
-            window.activateWindow()
+            if not client.bytesAvailable():
+                client.waitForReadyRead(500)
+            raw_cmd = client.readAll().data().decode("utf-8", errors="ignore").strip()
+            if raw_cmd == "QUIT":
+                window.close()
+            else:
+                window.showNormal()
+                window.raise_()
+                window.activateWindow()
             client.deleteLater()
 
     local_server.newConnection.connect(handle_ipc_activation)
 
     window.show()
-    sys.exit(app.exec())
+    exit_code = app.exec()
+
+    # Clean up single-instance IPC server
+    try:
+        local_server.close()
+    except Exception:
+        pass
+
+    # Ensure all child subprocesses are dead
+    try:
+        from process_tracker import cleanup_all_subprocesses
+        cleanup_all_subprocesses()
+    except Exception:
+        pass
+
+    try:
+        from update_checker import stop_all_active_checkers
+        stop_all_active_checkers()
+    except Exception:
+        pass
+
+    os._exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,16 @@
 import os
+import sys
+import builtins
 import json
 import shutil
 import time
 import logging
 import certifi
 from typing import Optional
+
+# Ensure sys.exit is available if Kaggle SDK attempts to exit on failed auth
+if not hasattr(builtins, "exit"):
+    builtins.exit = sys.exit
 
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["CURL_CA_BUNDLE"] = certifi.where()
@@ -40,7 +46,11 @@ class KaggleBridge:
         # Initialize native Kaggle API client
         from kaggle.api.kaggle_api_extended import KaggleApi
         self.api = KaggleApi()
-        self.api.authenticate()
+        try:
+            self.api.authenticate()
+        except (Exception, SystemExit) as e:
+            logger.warning(f"Kaggle authentication failed: {e}")
+            raise KaggleError(f"Kaggle authentication failed: {e}")
         
         # DEBUG LOGGING
         try:
@@ -171,7 +181,7 @@ class KaggleBridge:
             
             # Robust Multi-Threaded Resumable Download Loop
             # Kaggle returns 404 for HEAD requests, so we must use a stream GET to fetch headers
-            with requests.get(url, stream=True, timeout=15) as head_res:
+            with requests.get(url, stream=True, timeout=45) as head_res:
                 total_expected = int(head_res.headers.get("Content-Length", 0))
                 
             if total_expected == 0:
@@ -200,7 +210,7 @@ class KaggleBridge:
                 for attempt in range(5):
                     written_so_far = 0
                     try:
-                        res = requests.get(url, headers=headers, stream=True, timeout=15)
+                        res = requests.get(url, headers=headers, stream=True, timeout=45)
                         if res.status_code not in (200, 206):
                             res.raise_for_status()
                             
