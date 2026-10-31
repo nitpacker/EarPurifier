@@ -89,7 +89,7 @@ class ConfigManager:
             "kaggle_username": "",
             "kaggle_api_key": "",
             "output_folder": "",
-            "enable_logging": False,
+            "enable_logging": True,
             "local_model": "SOTA (RoFormer) - Requires High-End GPU",
             "processing_mode": "Cloud (Kaggle)", # or "Local (GPU)"
             "delete_output_files": False

@@ -425,7 +425,7 @@ class SettingsDialog(QDialog):
         form_general.addRow("Local AI Model:", self.cmb_model)
 
         self.chk_logging = QCheckBox("Enable Background Logging (Recommended)")
-        self.chk_logging.setChecked(self.config.get("enable_logging"))
+        self.chk_logging.setChecked(self.config.get("enable_logging", True))
         form_general.addRow("", self.chk_logging)
         grp_general.setLayout(form_general)
 
