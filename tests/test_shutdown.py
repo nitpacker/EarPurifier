@@ -37,6 +37,19 @@ class TestShutdownLifecycle(unittest.TestCase):
 
     def setUp(self):
         self.config = ConfigManager()
+        self.qm = QueueManager()
+        for jid in list(self.qm.get_all_jobs().keys()):
+            self.qm.delete_job(jid)
+
+    def tearDown(self):
+        for jid in list(self.qm.get_all_jobs().keys()):
+            self.qm.delete_job(jid)
+        stop_all_active_checkers()
+        cleanup_all_subprocesses()
+        app = QApplication.instance()
+        if app:
+            app.closeAllWindows()
+            app.processEvents()
 
     def test_subprocess_tracker_and_kill(self):
         """Verifies that child subprocesses are tracked and terminated cleanly."""
@@ -59,7 +72,10 @@ class TestShutdownLifecycle(unittest.TestCase):
     def test_active_checkers_cleanup(self):
         """Verifies that running update checkers are terminated and removed from registry."""
         def slow_get(*args, **kwargs):
-            time.sleep(5)
+            for _ in range(50):
+                if getattr(checker, "_is_stopped", False):
+                    break
+                time.sleep(0.1)
             return MagicMock(status_code=200)
 
         with patch("update_checker.requests.get", side_effect=slow_get):
@@ -112,31 +128,34 @@ class TestShutdownLifecycle(unittest.TestCase):
         from ui.main_window import MainWindow
         from PySide6.QtGui import QCloseEvent
 
-        win = MainWindow()
-        # Add an active job
-        jid = "test_active_job_123"
-        win.queue_manager.state["jobs"][jid] = {
-            "status": "PROCESSING_CLOUD",
-            "kaggle_kernel_id": "testuser/earpurifier-job-123",
-            "mode": "Cloud (Kaggle)"
-        }
+        with patch.object(MainWindow, "init_threads"), patch.object(MainWindow, "start_auto_update_check"):
+            win = MainWindow()
+            # Add an active job
+            jid = "test_active_job_123"
+            win.queue_manager.state["jobs"][jid] = {
+                "status": "PROCESSING_CLOUD",
+                "kaggle_kernel_id": "testuser/earpurifier-job-123",
+                "mode": "Cloud (Kaggle)"
+            }
 
-        # 1. User cancels exit (clicks Keep Running)
-        with patch("ui.overlay_widgets.CloseActiveJobDialog.exec", return_value=0):
-            event = QCloseEvent()
-            win.closeEvent(event)
-            self.assertFalse(event.isAccepted())
-            self.assertEqual(win.queue_manager.get_job(jid)["status"], "PROCESSING_CLOUD")
+            # 1. User cancels exit (clicks Keep Running)
+            with patch("ui.overlay_widgets.CloseActiveJobDialog.exec", return_value=0):
+                event = QCloseEvent()
+                win.closeEvent(event)
+                self.assertFalse(event.isAccepted())
+                self.assertEqual(win.queue_manager.get_job(jid)["status"], "PROCESSING_CLOUD")
 
-        # 2. User confirms exit (clicks Exit & Abort)
-        mock_cloud_thread = MagicMock()
-        win.cloud_thread = mock_cloud_thread
-        with patch("ui.overlay_widgets.CloseActiveJobDialog.exec", return_value=1):
-            event = QCloseEvent()
-            win.closeEvent(event)
-            self.assertTrue(event.isAccepted())
-            self.assertEqual(win.queue_manager.get_job(jid)["status"], "ABORTED")
-            mock_cloud_thread.stop.assert_called_once()
+            # 2. User confirms exit (clicks Exit & Abort)
+            mock_cloud_thread = MagicMock()
+            mock_cloud_thread.isRunning.return_value = False
+            win.cloud_thread = mock_cloud_thread
+            with patch("ui.overlay_widgets.CloseActiveJobDialog.exec", return_value=1):
+                event = QCloseEvent()
+                win.closeEvent(event)
+                self.assertTrue(event.isAccepted())
+                self.assertEqual(win.queue_manager.get_job(jid)["status"], "ABORTED")
+                mock_cloud_thread.stop.assert_called_once()
+            win.close()
 
 
 if __name__ == "__main__":

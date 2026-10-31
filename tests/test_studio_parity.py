@@ -30,6 +30,14 @@ class TestStudioParity(unittest.TestCase):
             self.queue_mgr.delete_job(jid)
         set_language("en")
 
+    def tearDown(self):
+        from update_checker import stop_all_active_checkers
+        stop_all_active_checkers()
+        app = QApplication.instance()
+        if app:
+            app.closeAllWindows()
+            app.processEvents()
+
     def test_rotating_spinner_lifecycle(self):
         spinner = RotatingSpinner(14)
         self.assertFalse(spinner._is_spinning)
@@ -66,10 +74,16 @@ class TestStudioParity(unittest.TestCase):
         self.assertFalse(widget.sep3.isHidden())
         self.assertFalse(widget.lbl_eta.isHidden())
         self.assertIn("RoFormer-T4", widget.lbl_meta_model.text())
-        self.assertIn("03:05", widget.lbl_meta_dur.text())
+        self.assertEqual(widget.lbl_meta_dur.text(), "00:00")
+
+        # Test live tick
+        widget._on_timer_tick()
+        self.assertEqual(widget.lbl_meta_dur.text(), "00:01")
 
         # Transition to COMPLETED
+        widget.job_dict["final_elapsed_seconds"] = 185
         widget.update_status("COMPLETED")
+        self.assertEqual(widget.lbl_meta_dur.text(), "03:05")
         self.assertFalse(spinner := widget.spinner._is_spinning)
         self.assertTrue(widget.progress.isHidden())
         self.assertFalse(widget.btn_show_folder.isHidden())
@@ -83,6 +97,9 @@ class TestStudioParity(unittest.TestCase):
         self.assertFalse(widget.spinner._is_spinning)
         self.assertTrue(widget.lbl_eta.isHidden())
         self.assertTrue(widget.sep3.isHidden())  # NO dangling separator!
+        widget.timer.stop()
+        widget.spinner.stop()
+        widget.close()
 
     def test_segmented_capsule_switcher(self):
         switcher = SegmentedPillSwitcher()

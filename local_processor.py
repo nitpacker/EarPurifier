@@ -239,5 +239,4 @@ class LocalJobProcessor(QThread):
                 pass
         self.requestInterruption()
         if self.isRunning():
-            self.terminate()
-            self.wait(100)
+            self.wait(500)

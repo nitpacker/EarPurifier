@@ -36,6 +36,14 @@ class TestUpdateChecker(unittest.TestCase):
     def setUp(self):
         self.config = ConfigManager()
 
+    def tearDown(self):
+        from update_checker import stop_all_active_checkers
+        stop_all_active_checkers()
+        app = QApplication.instance()
+        if app:
+            app.closeAllWindows()
+            app.processEvents()
+
     def test_semver_comparisons(self):
         # Basic newer
         self.assertTrue(is_newer_version("0.0.2", "0.0.1"))
@@ -253,6 +261,7 @@ class TestUpdateChecker(unittest.TestCase):
         # Test dismiss
         banner.on_dismiss()
         self.assertFalse(banner.isVisible())
+        banner.close()
 
     def test_settings_dialog_thread_gc_safety(self):
         import time, gc

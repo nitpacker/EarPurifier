@@ -93,7 +93,6 @@ def terminate_qt_threads(threads: list, timeout_ms: int = 300) -> None:
         try:
             if th.isRunning():
                 if not th.wait(timeout_ms):
-                    th.terminate()
-                    th.wait(100)
+                    th.wait(200)
         except Exception:
             pass

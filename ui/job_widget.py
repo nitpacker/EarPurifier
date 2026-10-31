@@ -48,6 +48,8 @@ class JobWidget(QWidget):
         self.current_status = "PENDING"
         self.current_badge_state = "queued"
         self.remaining_seconds = 0
+        self.is_cloud_congested = False
+        self._congested_mins = 2
         self._raw_message = ""
         self._theme_mode = Theme.get_mode()
 
@@ -78,6 +80,13 @@ class JobWidget(QWidget):
     def sizeHint(self):
         from PySide6.QtCore import QSize
         return QSize(self.width() if self.width() > 0 else 600, 118)
+
+    @staticmethod
+    def _format_elapsed(seconds: int) -> str:
+        secs = max(0, int(seconds))
+        hrs, rem = divmod(secs, 3600)
+        mins, s = divmod(rem, 60)
+        return f"{hrs:02d}:{mins:02d}:{s:02d}" if hrs > 0 else f"{mins:02d}:{s:02d}"
 
     def init_ui(self):
         card_layout = QVBoxLayout(self)
@@ -160,9 +169,11 @@ class JobWidget(QWidget):
         meta_layout.setContentsMargins(6, 2, 6, 2)
         meta_layout.setSpacing(8)
 
-        # Duration Tag
-        emins, esecs = divmod(int(self.duration), 60)
-        dur_txt = f"{emins:02d}:{esecs:02d}" if self.duration > 0 else "--:--"
+        # Total Processing Time (Elapsed Time) Slot
+        if self.job_dict.get("status", "PENDING") == "PENDING":
+            dur_txt = "00:00"
+        else:
+            dur_txt = self._format_elapsed(self.job_dict.get("final_elapsed_seconds", self.elapsed_seconds))
         self.lbl_meta_dur = QLabel(dur_txt)
         meta_layout.addWidget(self.lbl_meta_dur)
 
@@ -320,8 +331,8 @@ class JobWidget(QWidget):
         self.lbl_meta_dur.setStyleSheet(f"""
             font-family: {mono_font};
             font-size: 11px;
-            font-weight: 700;
-            color: {accent_emerald};
+            font-weight: 600;
+            color: {text_muted};
             background: transparent;
         """)
 
@@ -331,7 +342,7 @@ class JobWidget(QWidget):
         self._update_model_label()
 
         self.lbl_name.setStyleSheet(f"font-weight: 700; font-size: 12.5px; color: {text_head}; background: transparent;")
-        self.lbl_elapsed.setStyleSheet(f"font-family: {mono_font}; font-size: 10.5px; color: {text_faint}; background: transparent;")
+        self.lbl_elapsed.setVisible(False)
         self.chk_select.setStyleSheet(get_checkbox_qss(theme_mode))
 
         self.progress.setStyleSheet(f"""
@@ -368,67 +379,34 @@ class JobWidget(QWidget):
     def _set_badge_style(self, state: str):
         self.current_badge_state = state
         mode = self._theme_mode
-        accent_blue = Theme.get_token("ACCENT_BLUE", mode)
-        accent_emerald = Theme.get_token("ACCENT_EMERALD", mode)
-        accent_amber = Theme.get_token("ACCENT_AMBER", mode)
-        accent_red = Theme.get_token("ACCENT_RED", mode)
-        text_faint = Theme.get_token("TEXT_FAINT", mode)
+        tokens = {
+            "running": (t("badge_running"), "rgba(2, 132, 199, 0.12)", Theme.get_token("ACCENT_BLUE", mode), "rgba(2, 132, 199, 0.3)"),
+            "completed": (t("badge_completed"), "rgba(16, 185, 129, 0.12)", Theme.get_token("ACCENT_EMERALD", mode), "rgba(16, 185, 129, 0.3)"),
+            "aborted": (t("badge_aborted"), "rgba(245, 158, 11, 0.12)", Theme.get_token("ACCENT_AMBER", mode), "rgba(245, 158, 11, 0.3)"),
+            "failed": (t("badge_failed"), "rgba(239, 68, 68, 0.12)", Theme.get_token("ACCENT_RED", mode), "rgba(239, 68, 68, 0.3)"),
+        }
+        text, bg, col, border = tokens.get(state, (t("badge_queued"), "rgba(134, 161, 147, 0.12)", Theme.get_token("TEXT_FAINT", mode), "rgba(134, 161, 147, 0.3)"))
+        self.lbl_badge.setText(text)
+        self.lbl_badge.setStyleSheet(f"background-color: {bg}; color: {col}; border: 1px solid {border}; font-size: 10px; font-weight: 800; padding: 1px 7px; border-radius: 10px;")
 
-        if state == "running":
-            self.lbl_badge.setText(t("badge_running"))
-            self.lbl_badge.setStyleSheet(f"""
-                background-color: rgba(2, 132, 199, 0.12);
-                color: {accent_blue};
-                border: 1px solid rgba(2, 132, 199, 0.3);
-                font-size: 10px;
-                font-weight: 800;
-                padding: 1px 7px;
-                border-radius: 10px;
-            """)
-        elif state == "completed":
-            self.lbl_badge.setText(t("badge_completed"))
-            self.lbl_badge.setStyleSheet(f"""
-                background-color: rgba(16, 185, 129, 0.12);
-                color: {accent_emerald};
-                border: 1px solid rgba(16, 185, 129, 0.3);
-                font-size: 10px;
-                font-weight: 800;
-                padding: 1px 7px;
-                border-radius: 10px;
-            """)
-        elif state == "aborted":
-            self.lbl_badge.setText(t("badge_aborted"))
-            self.lbl_badge.setStyleSheet(f"""
-                background-color: rgba(245, 158, 11, 0.12);
-                color: {accent_amber};
-                border: 1px solid rgba(245, 158, 11, 0.3);
-                font-size: 10px;
-                font-weight: 800;
-                padding: 1px 7px;
-                border-radius: 10px;
-            """)
-        elif state == "failed":
-            self.lbl_badge.setText(t("badge_failed"))
-            self.lbl_badge.setStyleSheet(f"""
-                background-color: rgba(239, 68, 68, 0.12);
-                color: {accent_red};
-                border: 1px solid rgba(239, 68, 68, 0.3);
-                font-size: 10px;
-                font-weight: 800;
-                padding: 1px 7px;
-                border-radius: 10px;
-            """)
+    def set_cloud_congested(self, congested: bool, mins: int = 2):
+        self.is_cloud_congested = congested
+        self._congested_mins = mins
+        mono_font = Theme.resolve_mono_font()
+        if congested:
+            accent_amber = Theme.get_token("ACCENT_AMBER", self._theme_mode)
+            self.sep3.setVisible(True)
+            self.lbl_eta.setVisible(True)
+            self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_amber}; background: transparent;")
+            self.lbl_eta.setText(t("eta_cloud_congested", mins=mins))
         else:
-            self.lbl_badge.setText(t("badge_queued"))
-            self.lbl_badge.setStyleSheet(f"""
-                background-color: rgba(134, 161, 147, 0.12);
-                color: {text_faint};
-                border: 1px solid rgba(134, 161, 147, 0.3);
-                font-size: 10px;
-                font-weight: 800;
-                padding: 1px 7px;
-                border-radius: 10px;
-            """)
+            accent_blue = Theme.get_token("ACCENT_BLUE", self._theme_mode)
+            self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_blue}; background: transparent;")
+            if self.remaining_seconds > 0:
+                rmins, rsecs = divmod(self.remaining_seconds, 60)
+                self.lbl_eta.setText(t("eta_time_ms", mins=rmins, secs=rsecs) if rmins > 0 else t("eta_time_s", secs=rsecs))
+            else:
+                self.lbl_eta.setText(t("eta_anytime"))
 
     def set_selection_mode(self, enabled: bool):
         self.chk_select.setVisible(enabled)
@@ -449,11 +427,12 @@ class JobWidget(QWidget):
             return
 
         self.elapsed_seconds += 1
-        emins, esecs = divmod(self.elapsed_seconds, 60)
-        self.lbl_elapsed.setText(f"{t('label_elapsed')} {emins:02d}:{esecs:02d}")
+        self.lbl_meta_dur.setText(self._format_elapsed(self.elapsed_seconds))
 
         if self.mode == "Cloud (Kaggle)":
-            if self.current_status in ["PENDING", "EXTRACTING", "UPLOADING"]:
+            if self.is_cloud_congested:
+                self.lbl_eta.setText(t("eta_cloud_congested", mins=self._congested_mins))
+            elif self.current_status in ["PENDING", "EXTRACTING", "UPLOADING"]:
                 self.lbl_eta.setText(t("eta_calculating"))
             elif self.current_status in ["PROCESSING_CLOUD", "DOWNLOADING", "REMUXING"]:
                 if not getattr(self, "eta_initialized", False):
@@ -488,46 +467,43 @@ class JobWidget(QWidget):
 
         mono_font = Theme.resolve_mono_font()
 
-        if status == "COMPLETED":
+        if status in ["COMPLETED", "ABORTED", "ERROR", "FAILED"]:
             self.timer.stop()
-            self._set_badge_style("completed")
-            self.sep3.setVisible(True)
-            self.lbl_eta.setVisible(True)
-            self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_emerald}; background: transparent;")
-            self.lbl_eta.setText(t("meta_saved_to_output"))
-
-            self._raw_message = "Purification complete · Audio isolated"
-            self.lbl_message.setText(t("msg_purification_complete"))
-            self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {text_muted}; background: transparent;")
+            self.is_cloud_congested = False
+            final_sec = self.job_dict.get("final_elapsed_seconds", self.elapsed_seconds)
+            self.lbl_meta_dur.setText(self._format_elapsed(final_sec))
             self.progress.setVisible(False)
             self.lbl_elapsed.setVisible(False)
-            self.btn_show_folder.setVisible(True)
 
-        elif status == "ABORTED":
-            self.timer.stop()
-            self._set_badge_style("aborted")
-            self.sep3.setVisible(False)
-            self.lbl_eta.setVisible(False)
-            self._raw_message = "Job aborted"
-            self.lbl_message.setText(t("msg_job_aborted"))
-            self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {accent_amber}; background: transparent;")
-            self.progress.setVisible(False)
-            self.lbl_elapsed.setVisible(True)
-            self.btn_show_folder.setVisible(False)
-
-        elif status in ["ERROR", "FAILED"]:
-            self.timer.stop()
-            self._set_badge_style("failed")
-            self.sep3.setVisible(False)
-            self.lbl_eta.setVisible(False)
-            self._raw_message = "Processing failed"
-            self.lbl_message.setText(t("msg_processing_failed"))
-            self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {accent_red}; background: transparent;")
-            self.progress.setVisible(False)
-            self.lbl_elapsed.setVisible(True)
-            self.btn_show_folder.setVisible(False)
+            if status == "COMPLETED":
+                self._set_badge_style("completed")
+                self.sep3.setVisible(True)
+                self.lbl_eta.setVisible(True)
+                self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_emerald}; background: transparent;")
+                self.lbl_eta.setText(t("meta_saved_to_output"))
+                self._raw_message = "Purification complete · Audio isolated"
+                self.lbl_message.setText(t("msg_purification_complete"))
+                self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {text_muted}; background: transparent;")
+                self.btn_show_folder.setVisible(True)
+            elif status == "ABORTED":
+                self._set_badge_style("aborted")
+                self.sep3.setVisible(False)
+                self.lbl_eta.setVisible(False)
+                self._raw_message = "Job aborted"
+                self.lbl_message.setText(t("msg_job_aborted"))
+                self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {accent_amber}; background: transparent;")
+                self.btn_show_folder.setVisible(False)
+            else:
+                self._set_badge_style("failed")
+                self.sep3.setVisible(False)
+                self.lbl_eta.setVisible(False)
+                self._raw_message = "Processing failed"
+                self.lbl_message.setText(t("msg_processing_failed"))
+                self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {accent_red}; background: transparent;")
+                self.btn_show_folder.setVisible(False)
 
         elif status == "PENDING":
+            self.lbl_meta_dur.setText("00:00")
             self._set_badge_style("queued")
             self.sep3.setVisible(True)
             self.lbl_eta.setVisible(True)
@@ -543,12 +519,14 @@ class JobWidget(QWidget):
 
         else: # is_running
             self._set_badge_style("running")
-            self.sep3.setVisible(self.mode == "Cloud (Kaggle)")
-            self.lbl_eta.setVisible(self.mode == "Cloud (Kaggle)")
-            self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_blue}; background: transparent;")
+            self.lbl_meta_dur.setText(self._format_elapsed(self.elapsed_seconds))
+            if not self.is_cloud_congested:
+                self.sep3.setVisible(self.mode == "Cloud (Kaggle)")
+                self.lbl_eta.setVisible(self.mode == "Cloud (Kaggle)")
+                self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_blue}; background: transparent;")
             self.progress.setVisible(True)
             self.progress.setRange(0, 0)
-            self.lbl_elapsed.setVisible(True)
+            self.lbl_elapsed.setVisible(False)
             self.btn_show_folder.setVisible(False)
             if not self._raw_message or self._raw_message == "Waiting in queue...":
                 self._raw_message = "Isolating vocals with AI..."
@@ -556,6 +534,18 @@ class JobWidget(QWidget):
             self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {accent_emerald}; background: transparent;")
 
     def update_message(self, message: str):
+        if message.startswith("QUEUE_CONGESTED:"):
+            try:
+                mins = int(message.split(":", 1)[1])
+            except Exception:
+                mins = 2
+            self.set_cloud_congested(True, mins)
+            return
+        elif message == "QUEUE_RESOLVED" or (self.is_cloud_congested and "running" in message.lower()):
+            self.set_cloud_congested(False)
+            if message == "QUEUE_RESOLVED":
+                return
+
         self._raw_message = message
         self.lbl_message.setText(translate_worker_message(message))
 
@@ -563,6 +553,9 @@ class JobWidget(QWidget):
         self.job_dict = job_data
         if "duration" in job_data:
             self.duration = job_data["duration"]
+        if "final_elapsed_seconds" in job_data:
+            self.elapsed_seconds = int(job_data["final_elapsed_seconds"])
+            self.lbl_meta_dur.setText(self._format_elapsed(self.elapsed_seconds))
         if "status" in job_data and job_data["status"] != self.current_status:
             self.update_status(job_data["status"])
         if "message" in job_data and job_data["message"] != self._raw_message:
@@ -581,7 +574,6 @@ class JobWidget(QWidget):
         self._update_model_label()
         if self._raw_message:
             self.lbl_message.setText(translate_worker_message(self._raw_message))
-        if self.elapsed_seconds > 0:
-            emins, esecs = divmod(self.elapsed_seconds, 60)
-            self.lbl_elapsed.setText(f"{t('label_elapsed')} {emins:02d}:{esecs:02d}")
+        if self.is_cloud_congested:
+            self.lbl_eta.setText(t("eta_cloud_congested", mins=self._congested_mins))
 

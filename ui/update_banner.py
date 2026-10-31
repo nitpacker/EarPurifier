@@ -168,26 +168,26 @@ class UpdateBannerWidget(QFrame):
         top_bar = QHBoxLayout()
         top_bar.setSpacing(8)
 
-        self.icon_badge = VectorSparkleIcon()
+        self.icon_badge = VectorSparkleIcon(self)
         top_bar.addWidget(self.icon_badge, 0, Qt.AlignVCenter)
 
-        self.lbl_title = QLabel()
+        self.lbl_title = QLabel(self)
         self.lbl_title.setStyleSheet("font-size: 13px; font-weight: 800;")
         top_bar.addWidget(self.lbl_title, 1, Qt.AlignVCenter)
 
-        self.btn_close = BannerCloseButton()
+        self.btn_close = BannerCloseButton(self)
         self.btn_close.clicked = self.on_dismiss
         top_bar.addWidget(self.btn_close, 0, Qt.AlignVCenter)
         main_layout.addLayout(top_bar)
 
         # Body: Changelog preview inside sleek scroll area
-        self.scroll_notes = QScrollArea()
+        self.scroll_notes = QScrollArea(self)
         self.scroll_notes.setWidgetResizable(True)
         self.scroll_notes.setMaximumHeight(90)
         self.scroll_notes.setFrameShape(QFrame.NoFrame)
         self.scroll_notes.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        self.lbl_notes = QLabel()
+        self.lbl_notes = QLabel(self.scroll_notes)
         self.lbl_notes.setWordWrap(True)
         self.lbl_notes.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.scroll_notes.setWidget(self.lbl_notes)
@@ -197,12 +197,12 @@ class UpdateBannerWidget(QFrame):
         btn_bar = QHBoxLayout()
         btn_bar.setSpacing(8)
 
-        self.btn_download = QPushButton(t("btn_download_update"))
+        self.btn_download = QPushButton(t("btn_download_update"), self)
         self.btn_download.setCursor(Qt.PointingHandCursor)
         self.btn_download.clicked.connect(self.on_download)
         btn_bar.addWidget(self.btn_download)
 
-        self.btn_remind = QPushButton(t("btn_dismiss_update"))
+        self.btn_remind = QPushButton(t("btn_dismiss_update"), self)
         self.btn_remind.setCursor(Qt.PointingHandCursor)
         self.btn_remind.clicked.connect(self.on_dismiss)
         btn_bar.addWidget(self.btn_remind)

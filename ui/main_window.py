@@ -121,7 +121,10 @@ class MainWindow(QMainWindow):
         self.init_threads()
 
         # Non-blocking auto-update check delayed 2.5s for instant startup
-        QTimer.singleShot(2500, self.start_auto_update_check)
+        self._auto_update_timer = QTimer(self)
+        self._auto_update_timer.setSingleShot(True)
+        self._auto_update_timer.timeout.connect(self.start_auto_update_check)
+        self._auto_update_timer.start(2500)
 
     def init_ui(self):
         self.setWindowTitle(t("app_title"))
@@ -521,8 +524,13 @@ class MainWindow(QMainWindow):
                     continue
                 chosen_index = dlg.get_chosen_index()
 
+            try:
+                media_dur = float(probe_result.get("format", {}).get("duration", 0.0))
+            except (TypeError, ValueError):
+                media_dur = 0.0
+
             self.queue_manager.add_job(
-                file, mode=mode, duration=0.0, model=display_model,
+                file, mode=mode, duration=media_dur, model=display_model,
                 selected_audio_stream=chosen_index, probe_result=probe_result
             )
 
@@ -562,6 +570,8 @@ class MainWindow(QMainWindow):
             if j.get("status") in ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "PROCESSING_LOCAL", "DOWNLOADING", "REMUXING"]:
                 self.queue_manager.abort_job(jid)
 
+        if hasattr(self, '_auto_update_timer') and self._auto_update_timer.isActive():
+            self._auto_update_timer.stop()
         try:
             from update_checker import stop_all_active_checkers
             stop_all_active_checkers()
@@ -580,5 +590,3 @@ class MainWindow(QMainWindow):
             pass
 
         event.accept()
-        if QApplication.instance():
-            QApplication.instance().quit()

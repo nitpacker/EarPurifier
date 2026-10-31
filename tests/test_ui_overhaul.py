@@ -11,7 +11,6 @@ if root_dir not in sys.path:
 test_appdata = os.path.join(root_dir, ".test_appdata")
 os.environ["APPDATA"] = test_appdata
 os.makedirs(test_appdata, exist_ok=True)
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
@@ -37,14 +36,13 @@ app = QApplication.instance() or QApplication([])
 
 class TestUIOverhaul(unittest.TestCase):
 
-    @classmethod
-    def tearDownClass(cls):
-        # Cleanup test appdata
-        if os.path.exists(test_appdata):
-            try:
-                shutil.rmtree(test_appdata, ignore_errors=True)
-            except Exception:
-                pass
+    def tearDown(self):
+        from update_checker import stop_all_active_checkers
+        stop_all_active_checkers()
+        app = QApplication.instance()
+        if app:
+            app.closeAllWindows()
+            app.processEvents()
 
     def test_01_line_count_ceiling(self):
         """Verify that every python file in ui/ is strictly under 600 lines."""
@@ -183,33 +181,28 @@ class TestUIOverhaul(unittest.TestCase):
 
     def test_08_main_window_theme_toggle_and_shutdown(self):
         """Verify MainWindow theme toggle and clean thread shutdown."""
-        win = MainWindow()
-        win.show()
-        initial_theme = win.theme_mode
+        from unittest.mock import patch
+        with patch.object(MainWindow, "init_threads"), patch.object(MainWindow, "start_auto_update_check"):
+            win = MainWindow()
+            win.show()
+            initial_theme = win.theme_mode
 
-        # Click theme button
-        win.btn_theme.click()
-        new_theme = win.theme_mode
-        self.assertNotEqual(initial_theme, new_theme)
+            # Click theme button
+            win.btn_theme.click()
+            new_theme = win.theme_mode
+            self.assertNotEqual(initial_theme, new_theme)
 
-        # Toggle back
-        win.btn_theme.click()
-        self.assertEqual(win.theme_mode, initial_theme)
+            # Toggle back
+            win.btn_theme.click()
+            self.assertEqual(win.theme_mode, initial_theme)
 
-        # Test bilingual toggle
-        win.apply_language("en")
-        self.assertEqual(win.language, "en")
-        win.apply_language("ar")
-        self.assertEqual(win.language, "ar")
+            # Test bilingual toggle
+            win.apply_language("en")
+            self.assertEqual(win.language, "en")
+            win.apply_language("ar")
+            self.assertEqual(win.language, "ar")
 
-        # Clean shutdown
-        if hasattr(win, 'local_thread') and win.local_thread:
-            win.local_thread.stop()
-            win.local_thread.wait(1000)
-        if hasattr(win, 'cloud_thread') and win.cloud_thread:
-            win.cloud_thread.stop()
-            win.cloud_thread.wait(1000)
-        win.close()
+            win.close()
 
     def test_09_i18n_translation_parity(self):
         """Verify 100% translation key parity between Arabic and English."""

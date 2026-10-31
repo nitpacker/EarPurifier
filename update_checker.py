@@ -214,8 +214,7 @@ class GitHubUpdateChecker(QThread):
         self.requestInterruption()
         if self.isRunning():
             try:
-                self.terminate()
-                self.wait(100)
+                self.wait(500)
             except Exception:
                 pass
 

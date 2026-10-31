@@ -99,17 +99,23 @@ class KaggleBridge:
             if error_msg.strip():
                 raise KaggleError(f"Failed to create dataset on Kaggle: {error_msg}")
             
-        logger.info("Successfully created dataset on Kaggle. Waiting 45s for processing...")
-        if abort_check:
-            for _ in range(45):
-                if abort_check():
+        logger.info(f"Successfully created dataset {dataset_id}. Polling dataset status until ready...")
+        poll_start = time.time()
+        while time.time() - poll_start < 90:
+            if abort_check and abort_check():
+                break
+            try:
+                stat = self.api.dataset_status(dataset_id)
+                stat_str = str(getattr(stat, "status", stat)).lower()
+                if "ready" in stat_str:
+                    logger.info(f"Dataset {dataset_id} is ready after {int(time.time() - poll_start)}s.")
                     break
-                time.sleep(1)
-        else:
-            time.sleep(45)
+            except Exception as e:
+                logger.debug(f"Polling dataset_status error: {e}")
+            time.sleep(2)
         return dataset_id
 
-    def push_kernel(self, kernel_dir: str, kernel_name: str, dataset_id: str) -> str:
+    def push_kernel(self, kernel_dir: str, kernel_name: str, dataset_id: str, duration: float = 0.0) -> str:
         """Pushes the worker kernel and returns the kernel ID."""
         kernel_id = f"{self.username}/{kernel_name}"
         
@@ -133,8 +139,9 @@ class KaggleBridge:
         with open(os.path.join(kernel_dir, "kernel-metadata.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
             
-        logger.info(f"Pushing kernel {kernel_id} via Kaggle API...")
-        self.api.kernels_push(folder=kernel_dir)
+        calc_timeout = min(43200, max(7200, int(duration * 3.0) + 1800))
+        logger.info(f"Pushing kernel {kernel_id} via Kaggle API with timeout {calc_timeout}s...")
+        self.api.kernels_push(folder=kernel_dir, timeout=str(calc_timeout))
         return kernel_id
         
     def poll_status(self, kernel_id: str) -> str:

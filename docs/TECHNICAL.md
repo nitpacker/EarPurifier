@@ -231,9 +231,9 @@ File: `main.py`
    - **Local Path (`PROCESSING_LOCAL`)**: `LocalJobProcessor` launches isolated `audio-separator.exe`. Real-time progress is scraped from stdout regex `r'(\d{1,3})%'` and dispatched to UI.
    - **Cloud Path (`UPLOADING` $\to$ `PROCESSING_CLOUD` $\to$ `DOWNLOADING`)**:
      - Creates ephemeral dataset buffer `{username}/earpurifier-audio-buffer-{job_id[:8]}`.
-     - Waits 45 seconds for Kaggle backend GCS ingestion.
-     - Pushes worker kernel containing injected model specifications.
-     - Polls status every 30 seconds (sliced into 1-second ticks for responsive abort handling).
+     - Actively polls `api.dataset_status()` every 2 seconds until verified `"ready"` (90s ceiling), eliminating blind sleep latency and unindexed dataset push errors.
+     - Pushes worker kernel with injected model specifications and dynamic duration-aware session timeout (`\min(43200, \max(7200, \text{duration} \times 3.0 + 1800))`).
+     - Polls status every 30 seconds (sliced into 1-second ticks for responsive abort handling). If `QUEUED` exceeds 2 minutes, dispatches `QUEUE_CONGESTED` telemetry, pausing the client-side ETA countdown until `RUNNING`.
      - Downloads `clean_vocals.flac` via 4-thread chunked HTTP Range queries.
 4. **Remuxing & Assembly (`REMUXING`)**:
    - `media_engine.pad_or_trim_audio()` guarantees exact duration parity with the source file.
@@ -261,8 +261,8 @@ Managed by `local_processor.py` and `dependency_manager.py`:
 ### 6.2. Cloud Engine & Kaggle Infrastructure
 Managed by `processor_thread.py`, `kaggle_bridge.py`, and `worker/worker.py`:
 - **Authentication**: Dynamically maps credentials. Tokens prefixed with `KGAT_` are mapped to `KAGGLE_API_TOKEN` (HTTP Bearer Auth); legacy tokens are mapped to `KAGGLE_KEY` (HTTP Basic Auth). Sets `KAGGLE_CONFIG_DIR` to a dummy path to prevent reading stale local config files.
-- **Ephemeral Dataset Architecture**: Each job uses an isolated dataset slug `earpurifier-audio-buffer-<uuid>` containing the 48kHz FLAC stem and `dataset-metadata.json`.
-- **Kernel Injection**: Modifies `worker/worker.py` in-memory using regex substitutions to bind target model filenames and expected audio stem identifiers before dispatching `api.kernels_push()`.
+- **Ephemeral Dataset Architecture**: Each job uses an isolated dataset slug `earpurifier-audio-buffer-<uuid>` containing the 48kHz FLAC stem and `dataset-metadata.json`, actively polled via `api.dataset_status()` until verified `"ready"`.
+- **Kernel Injection & Dynamic Timeout**: Modifies `worker/worker.py` in-memory using regex substitutions to bind target model filenames and expected audio stem identifiers. Computes a bounded duration-aware execution timeout (`min(43200, max(7200, duration * 3.0 + 1800))`) passed to `api.kernels_push()`.
 - **4-Thread Chunked GCS Downloader**: Bypasses Kaggle SDK output methods. Retrieves direct Google Cloud Storage signed URLs via `ApiListKernelSessionOutputRequest`, determines file size via streaming GET, and downloads across 4 concurrent threads using `Range: bytes=X-Y` requests into `.part0` through `.part3` before sequential stitching.
 
 ### 6.3. Master Cache Acceleration (`earpurifier-cloud-assets-v2`)
@@ -402,6 +402,8 @@ All updates to `config.json` and `job_state.json` invoke `_atomic_write_json()`:
 | **Zero-Duration Audio Destruction** | Corrupt container headers returning `0.0` duration cause `ffmpeg -t 0` to create empty files. | Traps `target_duration <= 0.0` and falls back to a passthrough file copy without trimming. | `media_engine.py` |
 | **Attached Picture Remux False Positives** | Audio files with embedded album art have video streams flagged with `disposition.attached_pic == 1`. | Probing filters out attached picture streams from the video list, treating the file as pure audio. | `media_engine.py` |
 | **Windows Title Bar Theme Mismatch** | Dark theme in Qt doesn't automatically theme the OS window frame on Windows 10/11. | Calls native DWM API `DwmSetWindowAttribute` with `DWMWA_USE_IMMERSIVE_DARK_MODE` (attribute 20 / 19). | `ui/theme.py` |
+| **Unindexed Dataset Push Race** | Static 45s sleep pushes kernel while GCS ingestion is still unpacking, causing scheduler deferrals. | Actively polls `api.dataset_status()` every 2s until verified `"ready"`. | `kaggle_bridge.py` |
+| **Cloud GPU Queue Congestion** | Platform-wide GPU pool demand spikes leave batch kernels queued for multiple minutes. | Dynamic session timeout bounds footprint; UI freezes client-side ETA and alerts user after 2m. | `processor_thread.py`, `ui/job_widget.py` |
 | **Single-Instance Deadlocks** | Second instance attempts to initialize resources or corrupt state files. | Handshake via `QLocalSocket` activates existing instance window and immediately terminates second process via `os._exit(0)`. | `main.py` |
 
 ---

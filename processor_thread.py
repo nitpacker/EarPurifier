@@ -95,8 +95,7 @@ class JobProcessor(QThread):
                 logger.warning(f"Could not cancel Kaggle kernel on stop: {e}")
         self.requestInterruption()
         if self.isRunning():
-            self.terminate()
-            self.wait(100)
+            self.wait(500)
 
     def _update_status(self, job_id, status):
         self.queue_manager.update_job(job_id, {"status": status})
@@ -272,7 +271,7 @@ class JobProcessor(QThread):
                     self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                     return
                 try:
-                    kernel_id = bridge.push_kernel(worker_dir, f"earpurifier-worker-{job_id[:8]}", dataset_id)
+                    kernel_id = bridge.push_kernel(worker_dir, f"earpurifier-worker-{job_id[:8]}", dataset_id, duration=job.get("duration", 0.0))
                     dispatch_success = True
                     break
                 except Exception as e:
@@ -299,6 +298,8 @@ class JobProcessor(QThread):
             self._update_status(job_id, "PROCESSING_CLOUD")
             self._log(job_id, "Waiting for Kaggle GPU processing...")
             
+            queued_start_time = None
+            is_congested = False
             retries = 0
             while self.running:
                 # Check for abort
@@ -315,6 +316,22 @@ class JobProcessor(QThread):
                         self._save_kaggle_log(job_id, kernel_id, bridge)
                         raise Exception("Kaggle Kernel failed or was cancelled.")
                     
+                    if k_status == "QUEUED":
+                        if queued_start_time is None:
+                            queued_start_time = time.time()
+                        queued_duration = time.time() - queued_start_time
+                        if queued_duration >= 120:
+                            queue_mins = max(2, int(queued_duration // 60))
+                            self.progress_update.emit(job_id, f"QUEUE_CONGESTED:{queue_mins}")
+                            is_congested = True
+                    elif k_status == "RUNNING":
+                        queued_start_time = None
+                        if is_congested:
+                            is_congested = False
+                            self.progress_update.emit(job_id, "QUEUE_RESOLVED")
+                    else:
+                        queued_start_time = None
+
                     self._log(job_id, f"Kaggle Status: {k_status} (Polling...)")
                     # Sleep in small increments to react promptly to user abort
                     for _ in range(30):

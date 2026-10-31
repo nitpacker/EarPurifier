@@ -89,6 +89,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "eta_time_ms": "الوقت المتبقي: ~{mins} د {secs} ث",
         "eta_time_s": "الوقت المتبقي: ~{secs} ث",
         "eta_anytime": "الوقت المتبقي: على وشك الانتهاء...",
+        "eta_cloud_congested": "ازدحام في خوادم المعالجة السحابية (قيد الانتظار منذ {mins} د). بانتظار دورك...",
 
         # Job Status & Worker Messages
         "msg_purification_complete": "اكتملت المهمة· تمت إزالة الموسيقى بنجاح",
@@ -284,6 +285,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "eta_time_ms": "ETA: ~{mins}m {secs}s",
         "eta_time_s": "ETA: ~{secs}s",
         "eta_anytime": "ETA: Anytime now...",
+        "eta_cloud_congested": "Cloud GPU pool congested (queued for {mins}m). Waiting for slot...",
 
         # Job Status & Worker Messages
         "msg_purification_complete": "Purification complete · Audio isolated",
@@ -538,6 +540,13 @@ def translate_worker_message(msg: str) -> str:
     """
     if not msg:
         return ""
+
+    if msg.startswith("QUEUE_CONGESTED:"):
+        mins = msg.split(":", 1)[1] if ":" in msg else "2"
+        return t("eta_cloud_congested", mins=mins)
+
+    if msg == "QUEUE_RESOLVED":
+        return t("msg_isolating_vocals")
 
     # Exact dictionary match
     if msg in WORKER_MESSAGE_KEY_MAP:
