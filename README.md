@@ -9,8 +9,6 @@
 [![PySide6](https://img.shields.io/badge/PySide6-Qt%206-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://wiki.qt.io/Qt_for_Python)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-Hardware%20Accelerated-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![Kaggle T4](https://img.shields.io/badge/Kaggle-T4%20Cloud%20GPU-20BEFF?style=for-the-badge&logo=kaggle&logoColor=white)](https://www.kaggle.com/)
-[![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11%20x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/Tests-40%20Passed-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](tests/)
 
 <p align="center">
   <b>Tear down the computational barrier of deep learning audio isolation.</b><br>
