@@ -9,7 +9,7 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 os.environ["APPDATA"] = os.path.join(root_dir, ".test_appdata")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 from ui.job_widget import JobWidget
 from ui.theme import Theme
 from i18n import t, set_language, get_current_language, translate_worker_message
@@ -35,6 +35,11 @@ class TestThreeFixes(unittest.TestCase):
             if fixed != content:
                 with open(worker_file, "w", encoding="utf-8") as f:
                     f.write(fixed)
+        try:
+            from update_checker import stop_all_active_checkers
+            stop_all_active_checkers()
+        except Exception:
+            pass
         app = QApplication.instance()
         if app:
             app.closeAllWindows()
@@ -113,6 +118,10 @@ class TestThreeFixes(unittest.TestCase):
             w.timer.stop()
             w.spinner.stop()
             w.close()
+            w.deleteLater()
+        app = QApplication.instance()
+        if app:
+            app.processEvents()
 
     def test_fix1_main_window_probe_duration_extraction(self):
         """Test Fix 1: duration extraction from probe_result in add_media."""
@@ -237,6 +246,10 @@ class TestThreeFixes(unittest.TestCase):
         widget.timer.stop()
         widget.spinner.stop()
         widget.close()
+        widget.deleteLater()
+        app = QApplication.instance()
+        if app:
+            app.processEvents()
 
     def test_fix3_processor_thread_congestion_tracking(self):
         """Test Fix 3: processor_thread tracks QUEUED state and emits QUEUE_CONGESTED >= 120s."""
@@ -302,6 +315,187 @@ class TestThreeFixes(unittest.TestCase):
         # Verify QUEUE_CONGESTED:2 was emitted, followed by QUEUE_RESOLVED
         self.assertIn("QUEUE_CONGESTED:2", emitted_messages)
         self.assertIn("QUEUE_RESOLVED", emitted_messages)
+
+        processor.stop()
+        processor.deleteLater()
+
+
+class TestBatchMediaAdditionFixes(unittest.TestCase):
+    def setUp(self):
+        set_language("en")
+        from queue_manager import QueueManager
+        self.qm = QueueManager()
+        for jid in list(self.qm.get_all_jobs().keys()):
+            self.qm.delete_job(jid)
+
+    def tearDown(self):
+        for jid in list(self.qm.get_all_jobs().keys()):
+            self.qm.delete_job(jid)
+        try:
+            from update_checker import stop_all_active_checkers
+            stop_all_active_checkers()
+        except Exception:
+            pass
+        app = QApplication.instance()
+        if app:
+            app.closeAllWindows()
+            app.processEvents()
+
+    def test_batch_add_media_atomicity_and_multi_track_dialog(self):
+        """Verify 1 audio + 2 multi-track videos do not enqueue early and pass correct tracks."""
+        from ui.main_window import MainWindow
+
+        files = ["C:/fake/voice.m4a", "C:/fake/movie1.mp4", "C:/fake/movie2.mp4"]
+
+        def fake_probe(path):
+            if "voice.m4a" in path:
+                return {"audio_streams": [{"channels": 2}], "video_streams": [], "format": {"duration": "45.0"}}
+            elif "movie1.mp4" in path:
+                return {"audio_streams": [{"channels": 2}, {"channels": 6}], "video_streams": [{"codec_name": "h264"}], "format": {"duration": "90.0"}}
+            elif "movie2.mp4" in path:
+                return {"audio_streams": [{"channels": 2}, {"channels": 2}, {"channels": 6}], "video_streams": [{"codec_name": "h264"}], "format": {"duration": "180.0"}}
+            return {"audio_streams": [{"channels": 2}], "format": {"duration": "10.0"}}
+
+        jobs_during_dialog = []
+        dialog_received_files = []
+
+        class MockTrackDialog:
+            def __init__(self, multi_track_files, parent=None):
+                dialog_received_files.extend(list(multi_track_files.keys()))
+                self.multi_track_files = multi_track_files
+
+            def exec(self):
+                # Verify that while dialog is executing, queue_manager has ZERO jobs
+                qm_jobs = self.win_ref.queue_manager.get_all_jobs()
+                jobs_during_dialog.append(len(qm_jobs))
+                return QDialog.Accepted
+
+            def get_selected_tracks(self):
+                return {
+                    "C:/fake/movie1.mp4": 1,
+                    "C:/fake/movie2.mp4": 2,
+                }
+
+        with patch.object(MainWindow, "init_threads"), \
+             patch.object(MainWindow, "start_auto_update_check"):
+            win = MainWindow()
+            win.config.set("kaggle_username", "testuser")
+            win.config.set("kaggle_api_key", "testkey")
+
+            def create_dialog(multi_track_files, parent=None):
+                dlg = MockTrackDialog(multi_track_files, parent)
+                dlg.win_ref = win
+                return dlg
+
+            with patch("ui.main_window.probe_container", side_effect=fake_probe), \
+                 patch("PySide6.QtWidgets.QFileDialog.getOpenFileNames", return_value=(files, "")), \
+                 patch("ui.main_window.AudioTrackSelectDialog", side_effect=create_dialog):
+
+                win.add_media("Cloud (Kaggle)")
+
+                # 1. Dialog only received the 2 multi-track files, NOT the audio file
+                self.assertNotIn("C:/fake/voice.m4a", dialog_received_files)
+                self.assertIn("C:/fake/movie1.mp4", dialog_received_files)
+                self.assertIn("C:/fake/movie2.mp4", dialog_received_files)
+                self.assertEqual(len(dialog_received_files), 2)
+
+                # 2. While dialog was open, ZERO jobs were in queue manager
+                self.assertEqual(jobs_during_dialog, [0])
+
+                # 3. After completion, all 3 jobs exist in queue manager
+                all_jobs = win.queue_manager.get_all_jobs()
+                self.assertEqual(len(all_jobs), 3)
+
+                voice_job = [j for j in all_jobs.values() if "voice.m4a" in j.get("original_media", "")][0]
+                movie1_job = [j for j in all_jobs.values() if "movie1.mp4" in j.get("original_media", "")][0]
+                movie2_job = [j for j in all_jobs.values() if "movie2.mp4" in j.get("original_media", "")][0]
+
+                self.assertEqual(voice_job.get("selected_audio_stream"), 0)
+                self.assertEqual(movie1_job.get("selected_audio_stream"), 1)
+                self.assertEqual(movie2_job.get("selected_audio_stream"), 2)
+
+            win.close()
+
+    def test_batch_add_media_dialog_cancellation(self):
+        """Verify cancelling the multi-track dialog aborts the batch with 0 jobs queued."""
+        from ui.main_window import MainWindow
+
+        files = ["C:/fake/voice.m4a", "C:/fake/movie1.mp4"]
+
+        def fake_probe(path):
+            if "voice.m4a" in path:
+                return {"audio_streams": [{"channels": 2}], "video_streams": [], "format": {"duration": "45.0"}}
+            return {"audio_streams": [{"channels": 2}, {"channels": 6}], "video_streams": [{"codec_name": "h264"}], "format": {"duration": "90.0"}}
+
+        class MockRejectDialog:
+            def __init__(self, multi_track_files, parent=None):
+                pass
+            def exec(self):
+                return QDialog.Rejected
+            def get_selected_tracks(self):
+                return {}
+
+        with patch.object(MainWindow, "init_threads"), \
+             patch.object(MainWindow, "start_auto_update_check"):
+            win = MainWindow()
+            win.config.set("kaggle_username", "testuser")
+            win.config.set("kaggle_api_key", "testkey")
+
+            with patch("ui.main_window.probe_container", side_effect=fake_probe), \
+                 patch("PySide6.QtWidgets.QFileDialog.getOpenFileNames", return_value=(files, "")), \
+                 patch("ui.main_window.AudioTrackSelectDialog", MockRejectDialog):
+
+                win.add_media("Cloud (Kaggle)")
+
+                all_jobs = win.queue_manager.get_all_jobs()
+                self.assertEqual(len(all_jobs), 0)
+
+            win.close()
+
+    def test_add_media_reentrancy_guard(self):
+        """Verify re-entrant calls to add_media are ignored."""
+        from ui.main_window import MainWindow
+        with patch.object(MainWindow, "init_threads"), \
+             patch.object(MainWindow, "start_auto_update_check"):
+            win = MainWindow()
+            win.config.set("kaggle_username", "testuser")
+            win.config.set("kaggle_api_key", "testkey")
+
+            with patch("PySide6.QtWidgets.QFileDialog.getOpenFileNames") as mock_fd:
+                win._is_adding_media = True
+                win.add_media("Cloud (Kaggle)")
+                mock_fd.assert_not_called()
+
+                win._is_adding_media = False
+                mock_fd.return_value = ([], "")
+                win.add_media("Cloud (Kaggle)")
+                mock_fd.assert_called_once()
+                self.assertFalse(win._is_adding_media)
+
+            win.close()
+
+    def test_add_media_file_deduplication(self):
+        """Verify duplicate file selections are deduplicated."""
+        from ui.main_window import MainWindow
+        mock_probe = {
+            "format": {"duration": "30.0"},
+            "audio_streams": [{"channels": 2}],
+            "video_streams": [{"codec_name": "h264"}]
+        }
+        with patch.object(MainWindow, "init_threads"), \
+             patch.object(MainWindow, "start_auto_update_check"):
+            win = MainWindow()
+            win.config.set("kaggle_username", "testuser")
+            win.config.set("kaggle_api_key", "testkey")
+
+            with patch("ui.main_window.probe_container", return_value=mock_probe), \
+                 patch("PySide6.QtWidgets.QFileDialog.getOpenFileNames", return_value=(["C:/fake/same_file.mp4", "C:/fake/same_file.mp4"], "")):
+                win.add_media("Local (GPU)")
+                all_jobs = win.queue_manager.get_all_jobs()
+                self.assertEqual(len(all_jobs), 1)
+
+            win.close()
+
 
 if __name__ == "__main__":
     unittest.main()

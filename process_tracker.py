@@ -65,6 +65,10 @@ def cleanup_all_subprocesses() -> None:
             if proc.poll() is None:  # Still executing
                 kill_process_tree(proc.pid)
                 proc.kill()
+                try:
+                    proc.wait(timeout=0.5)
+                except Exception:
+                    pass
                 proc.poll()
         except Exception as e:
             logger.debug(f"Error terminating child process {getattr(proc, 'pid', 'unknown')}: {e}")
@@ -93,6 +97,7 @@ def terminate_qt_threads(threads: list, timeout_ms: int = 300) -> None:
         try:
             if th.isRunning():
                 if not th.wait(timeout_ms):
+                    th.terminate()
                     th.wait(200)
         except Exception:
             pass

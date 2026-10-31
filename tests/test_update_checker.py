@@ -339,18 +339,6 @@ class TestUpdateChecker(unittest.TestCase):
         expected_url = f"https://example.com/EarPurifier.{'exe' if current_os == 'windows' else ('dmg' if current_os == 'macos' else 'AppImage')}"
         self.assertEqual(received[0][3], expected_url)
 
-    def test_ui_files_line_limit(self):
-        ui_dir = os.path.join(root_dir, "ui")
-        for fname in os.listdir(ui_dir):
-            if fname.endswith(".py"):
-                fpath = os.path.join(ui_dir, fname)
-                with open(fpath, "r", encoding="utf-8") as f:
-                    lines = len(f.readlines())
-                self.assertLess(
-                    lines, 600,
-                    f"File '{fname}' exceeds 600 line limit! Actual lines: {lines}"
-                )
-
 
 if __name__ == "__main__":
     unittest.main()

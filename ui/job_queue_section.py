@@ -1,4 +1,5 @@
 import os
+import logging
 import subprocess
 import webbrowser
 from PySide6.QtWidgets import (
@@ -30,6 +31,8 @@ try:
     from i18n import t, is_rtl, format_jobs_count
 except ImportError:
     from src.i18n import t, is_rtl, format_jobs_count
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Job Queue Section (Reusable Studio Canvas) ────────────────────────────────

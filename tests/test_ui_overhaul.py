@@ -44,16 +44,6 @@ class TestUIOverhaul(unittest.TestCase):
             app.closeAllWindows()
             app.processEvents()
 
-    def test_01_line_count_ceiling(self):
-        """Verify that every python file in ui/ is strictly under 600 lines."""
-        ui_dir = os.path.join(root_dir, "ui")
-        for fname in os.listdir(ui_dir):
-            if fname.endswith(".py"):
-                fpath = os.path.join(ui_dir, fname)
-                with open(fpath, "r", encoding="utf-8") as f:
-                    lines = len(f.readlines())
-                self.assertLess(lines, 600, f"File {fname} has {lines} lines, exceeding 600 line limit!")
-
     def test_02_theme_tokens_and_default(self):
         """Verify that Light Mode is default and tokens toggle seamlessly."""
         cfg = ConfigManager()

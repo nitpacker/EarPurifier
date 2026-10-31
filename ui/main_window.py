@@ -2,6 +2,7 @@ import os
 import sys
 import shutil
 import logging
+import traceback
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QMessageBox, QFrame, QGridLayout,
@@ -24,10 +25,6 @@ from .update_banner import UpdateBannerWidget
 
 try:
     from update_checker import GitHubUpdateChecker
-except ImportError:
-    from src.update_checker import GitHubUpdateChecker
-
-try:
     from config_manager import ConfigManager
     from queue_manager import QueueManager
     from processor_thread import JobProcessor
@@ -35,7 +32,9 @@ try:
     from media_engine import probe_container
     from dependency_manager import DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader
     from logger_setup import setup_logger
+    from i18n import t, is_rtl, set_language, apply_app_direction
 except ImportError:
+    from src.update_checker import GitHubUpdateChecker
     from src.config_manager import ConfigManager
     from src.queue_manager import QueueManager
     from src.processor_thread import JobProcessor
@@ -43,20 +42,13 @@ except ImportError:
     from src.media_engine import probe_container
     from src.dependency_manager import DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader
     from src.logger_setup import setup_logger
-
-try:
-    from i18n import t, is_rtl, set_language, apply_app_direction
-except ImportError:
     from src.i18n import t, is_rtl, set_language, apply_app_direction
 
 logger = logging.getLogger(__name__)
 
 
 def set_native_window_theme(window: QWidget, dark: bool):
-    """
-    Integrates Windows native Desktop Window Manager (DWM) immersive dark title bar.
-    Prevents the glaring white title bar on Windows 10 & 11 in dark mode.
-    """
+    """Integrates Windows native DWM immersive dark title bar."""
     if sys.platform != "win32":
         return
     try:
@@ -64,16 +56,9 @@ def set_native_window_theme(window: QWidget, dark: bool):
             return
         import ctypes
         hwnd = int(window.winId())
-        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-        DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
         val = ctypes.c_int(1 if dark else 0)
-        res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(val), ctypes.sizeof(val)
-        )
-        if res != 0:
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ctypes.byref(val), ctypes.sizeof(val)
-            )
+        if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val)) != 0:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(val), ctypes.sizeof(val))
     except Exception as e:
         logger.debug(f"Could not set native window theme: {e}")
 
@@ -240,14 +225,7 @@ class MainWindow(QMainWindow):
             qf.setStyleStrategy(QFont.PreferAntialias | QFont.PreferQuality)
             app.setFont(qf)
 
-        self.setStyleSheet(f"""
-            * {{
-                font-family: "{active_font}";
-            }}
-            QMainWindow {{
-                background-color: {canvas_bg};
-            }}
-        """)
+        self.setStyleSheet(f'* {{ font-family: "{active_font}"; }} QMainWindow {{ background-color: {canvas_bg}; }}')
 
         if hasattr(self, 'cloud_section'):
             self.cloud_section.apply_theme(mode)
@@ -283,14 +261,7 @@ class MainWindow(QMainWindow):
             app.setFont(qf)
 
         canvas_bg = Theme.get_token("CANVAS_BG", self.theme_mode)
-        self.setStyleSheet(f"""
-            * {{
-                font-family: "{active_font}";
-            }}
-            QMainWindow {{
-                background-color: {canvas_bg};
-            }}
-        """)
+        self.setStyleSheet(f'* {{ font-family: "{active_font}"; }} QMainWindow {{ background-color: {canvas_bg}; }}')
         self.rail.setStyleSheet(get_sidebar_qss(is_rtl(new_lang), self.theme_mode))
         self.setWindowTitle(t("app_title"))
         self.logo_widget.retranslate_ui(t("logo_tooltip"))
@@ -464,80 +435,110 @@ class MainWindow(QMainWindow):
         self.add_media(mode)
 
     def add_media(self, mode: str):
-        if mode == "Cloud (Kaggle)":
-            self.init_threads()
-            if not self.config.get("kaggle_username"):
-                QMessageBox.warning(self, t("alert_missing_creds_title"), t("alert_missing_creds_msg"))
-                self.open_settings()
+        if getattr(self, "_is_adding_media", False):
+            return
+        self._is_adding_media = True
+        try:
+            if mode == "Cloud (Kaggle)":
+                username = (self.config.get("kaggle_username") or "").strip()
+                api_key = (self.config.get("kaggle_api_key") or "").strip()
+                if not username or not api_key:
+                    QMessageBox.warning(self, t("alert_missing_creds_title"), t("alert_missing_creds_msg"))
+                    self.open_settings()
+                    username = (self.config.get("kaggle_username") or "").strip()
+                    api_key = (self.config.get("kaggle_api_key") or "").strip()
+                    if not username or not api_key:
+                        return
+
+                if not hasattr(self, 'cloud_thread') or not self.cloud_thread.isRunning():
+                    self.init_threads()
+
+            try:
+                out_dir = self.config.get_output_folder(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                if not os.path.exists(out_dir):
+                    os.makedirs(out_dir, exist_ok=True)
+            except Exception as e:
+                QMessageBox.critical(self, t("alert_perm_denied_title"), t("alert_perm_denied_msg", error=str(e)))
                 return
 
-        try:
-            out_dir = self.config.get_output_folder(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            if not os.path.exists(out_dir):
-                os.makedirs(out_dir, exist_ok=True)
-        except Exception as e:
-            QMessageBox.critical(self, t("alert_perm_denied_title"), t("alert_perm_denied_msg", error=str(e)))
-            return
-
-        file_filter = (
-            f"{t('filter_supported_media')} (*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.weba *.m4a *.m4b *.mka *.mp3 *.wav *.flac *.aac *.ogg *.opus);;"
-            f"{t('filter_video_files')} (*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm);;"
-            f"{t('filter_audio_files')} (*.mp3 *.wav *.flac *.m4a *.m4b *.mka *.weba *.aac *.ogg *.opus);;"
-            f"{t('filter_all_files')} (*.*)"
-        )
-        files, _ = QFileDialog.getOpenFileNames(self, t("file_dialog_title"), "", file_filter)
-        if not files:
-            return
-
-        valid_files = [f for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS]
-        invalid_files = [os.path.basename(f) for f in files if os.path.splitext(f)[1].lower() not in SUPPORTED_EXTENSIONS]
-
-        if invalid_files:
-            supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS))
-            QMessageBox.warning(
-                self, t("alert_unsupported_title"),
-                t("alert_unsupported_msg", files="\n".join(invalid_files), supported=supported_list)
+            file_filter = (
+                f"{t('filter_supported_media')} (*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.weba *.m4a *.m4b *.mka *.mp3 *.wav *.flac *.aac *.ogg *.opus);;"
+                f"{t('filter_video_files')} (*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm);;"
+                f"{t('filter_audio_files')} (*.mp3 *.wav *.flac *.m4a *.m4b *.mka *.weba *.aac *.ogg *.opus);;"
+                f"{t('filter_all_files')} (*.*)"
             )
+            files, _ = QFileDialog.getOpenFileNames(self, t("file_dialog_title"), "", file_filter)
+            if not files:
+                return
 
-        if not valid_files:
-            return
+            files = list(dict.fromkeys(files))
+            valid_files = [f for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS]
+            invalid_files = [os.path.basename(f) for f in files if os.path.splitext(f)[1].lower() not in SUPPORTED_EXTENSIONS]
 
-        model_selection = self.config.get("local_model", "")
-        display_model = "RoFormer" if "RoFormer" in model_selection else ("MDX23C" if "MDX23C" in model_selection else "Kim Vocal 2")
+            if invalid_files:
+                supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+                QMessageBox.warning(
+                    self, t("alert_unsupported_title"),
+                    t("alert_unsupported_msg", files="\n".join(invalid_files), supported=supported_list)
+                )
 
-        for file in valid_files:
-            try:
-                probe_result = probe_container(file)
-            except Exception as e:
-                QMessageBox.warning(self, t("alert_analysis_err_title"), t("alert_analysis_err_msg", filename=os.path.basename(file), error=str(e)))
-                continue
+            if not valid_files:
+                return
 
-            audio_streams = probe_result.get("audio_streams", [])
-            if len(audio_streams) == 0:
-                QMessageBox.warning(self, t("alert_no_audio_title"), t("alert_no_audio_msg", filename=os.path.basename(file)))
-                continue
+            model_selection = self.config.get("local_model", "")
+            display_model = "RoFormer" if "RoFormer" in model_selection else ("MDX23C" if "MDX23C" in model_selection else "Kim Vocal 2")
 
-            chosen_index = 0
-            if len(audio_streams) > 1:
-                dlg = AudioTrackSelectDialog(audio_streams, os.path.basename(file), self)
-                if dlg.exec() != QDialog.Accepted:
+            probed_files = []
+            multi_track_files = {}
+
+            for file in valid_files:
+                try:
+                    probe_result = probe_container(file)
+                except Exception as e:
+                    QMessageBox.warning(self, t("alert_analysis_err_title"), t("alert_analysis_err_msg", filename=os.path.basename(file), error=str(e)))
                     continue
-                chosen_index = dlg.get_chosen_index()
 
-            try:
-                media_dur = float(probe_result.get("format", {}).get("duration", 0.0))
-            except (TypeError, ValueError):
-                media_dur = 0.0
+                audio_streams = probe_result.get("audio_streams", [])
+                if len(audio_streams) == 0:
+                    QMessageBox.warning(self, t("alert_no_audio_title"), t("alert_no_audio_msg", filename=os.path.basename(file)))
+                    continue
 
-            self.queue_manager.add_job(
-                file, mode=mode, duration=media_dur, model=display_model,
-                selected_audio_stream=chosen_index, probe_result=probe_result
-            )
+                try:
+                    media_dur = float(probe_result.get("format", {}).get("duration", 0.0))
+                except (TypeError, ValueError):
+                    media_dur = 0.0
 
-        if mode == "Cloud (Kaggle)":
-            self.cloud_section.refresh_list()
-        else:
-            self.local_section.refresh_list()
+                if len(audio_streams) > 1:
+                    multi_track_files[file] = audio_streams
+
+                probed_files.append((file, probe_result, media_dur))
+
+            if not probed_files:
+                return
+
+            chosen_tracks = {}
+            if multi_track_files:
+                dlg = AudioTrackSelectDialog(multi_track_files, self)
+                if dlg.exec() != QDialog.Accepted:
+                    return
+                chosen_tracks = dlg.get_selected_tracks()
+
+            for file, probe_result, media_dur in probed_files:
+                chosen_index = chosen_tracks.get(file, 0)
+                self.queue_manager.add_job(
+                    file, mode=mode, duration=media_dur, model=display_model,
+                    selected_audio_stream=chosen_index, probe_result=probe_result,
+                    save=False
+                )
+
+            self.queue_manager._save_state()
+
+            if mode == "Cloud (Kaggle)":
+                self.cloud_section.refresh_list()
+            else:
+                self.local_section.refresh_list()
+        finally:
+            self._is_adding_media = False
 
     def on_job_error(self, jid: str, error_msg: str):
         QMessageBox.critical(self, t("alert_job_err_title"), t("alert_job_err_msg", error=error_msg))

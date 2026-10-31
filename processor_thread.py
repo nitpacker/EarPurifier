@@ -25,57 +25,62 @@ class JobProcessor(QThread):
         self.username = username
         self.api_key = api_key
         self.kaggle_bridge = None
+        self._credentials_dirty = False
         self.running = True
         self.current_kernel_id = None
 
     def update_credentials(self, username: str, api_key: str):
+        if self.username == username and self.api_key == api_key and self.kaggle_bridge is not None:
+            return
         self.username = username
         self.api_key = api_key
-        try:
-            try:
-                from .kaggle_bridge import KaggleBridge
-            except ImportError:
-                from kaggle_bridge import KaggleBridge
-            self.kaggle_bridge = KaggleBridge(self.username, self.api_key)
-            logger.info(f"Re-initialized KaggleBridge with new user: {self.username}")
-        except (Exception, SystemExit) as e:
-            logger.error(f"Failed to re-initialize KaggleBridge: {e}")
+        self._credentials_dirty = True
 
     def run(self):
-        try:
-            try:
-                from .kaggle_bridge import KaggleBridge
-            except ImportError:
-                from kaggle_bridge import KaggleBridge
-            self.kaggle_bridge = KaggleBridge(self.username, self.api_key)
-        except (Exception, SystemExit) as e:
-            logger.error(f"Failed to initialize KaggleBridge: {e}")
-            return
-            
-        while self.running:
+        while self.running and not self.isInterruptionRequested():
             # Re-evaluate state
             jobs = self.queue_manager.get_all_jobs()
             active_cloud = self.queue_manager.has_active_cloud_job()
-            
+
+            if getattr(self, "_credentials_dirty", False) and not active_cloud:
+                self._credentials_dirty = False
+                if self.username and self.api_key and self.running and not self.isInterruptionRequested():
+                    try:
+                        try:
+                            from .kaggle_bridge import KaggleBridge
+                        except ImportError:
+                            from kaggle_bridge import KaggleBridge
+                        self.kaggle_bridge = KaggleBridge(self.username, self.api_key)
+                        logger.info(f"Re-initialized KaggleBridge with new user: {self.username}")
+                    except (Exception, SystemExit) as e:
+                        logger.error(f"Failed to re-initialize KaggleBridge: {e}")
+                        self.kaggle_bridge = None
+                elif not (self.username and self.api_key):
+                    self.kaggle_bridge = None
+
+            if not self.running or self.isInterruptionRequested():
+                break
+
             # Find a job to resume or start
             job_to_process = None
             for jid, job in jobs.items():
                 if job["status"] in ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "DOWNLOADING", "REMUXING"] and job.get("mode", "Cloud (Kaggle)") == "Cloud (Kaggle)":
                     job_to_process = (jid, job)
                     break
-            
+
             if not job_to_process and not active_cloud:
                 jid = self.queue_manager.get_next_pending_job()
                 if jid:
                     job_to_process = (jid, jobs[jid])
-                    
+                    logger.info(f"Thread picked up pending job: {jid} ({os.path.basename(jobs[jid].get('original_media', ''))})")
+
             if not job_to_process:
                 for _ in range(20):
-                    if not self.running:
+                    if not self.running or self.isInterruptionRequested():
                         break
                     time.sleep(0.1)
                 continue
-                
+
             job_id, job = job_to_process
             try:
                 self.process_job(job_id, job)
@@ -87,13 +92,13 @@ class JobProcessor(QThread):
 
     def stop(self):
         self.running = False
+        self.requestInterruption()
         if getattr(self, "current_kernel_id", None) and self.kaggle_bridge:
             try:
                 self.kaggle_bridge.cancel_kernel(self.current_kernel_id)
                 logger.info(f"Cancelled Kaggle kernel {self.current_kernel_id} on thread stop.")
             except Exception as e:
                 logger.warning(f"Could not cancel Kaggle kernel on stop: {e}")
-        self.requestInterruption()
         if self.isRunning():
             self.wait(500)
 
@@ -154,8 +159,21 @@ class JobProcessor(QThread):
         self._log(job_id, "Job aborted and cleaned up.")
 
     def process_job(self, job_id: str, job: dict):
+        if not self.kaggle_bridge and self.username and self.api_key:
+            try:
+                try:
+                    from .kaggle_bridge import KaggleBridge
+                except ImportError:
+                    from kaggle_bridge import KaggleBridge
+                self.kaggle_bridge = KaggleBridge(self.username, self.api_key)
+            except Exception as e:
+                logger.error(f"Failed to initialize KaggleBridge: {e}")
+
         # Capture the current bridge so mid-job credential changes don't corrupt ongoing requests
         bridge = self.kaggle_bridge
+        if not bridge:
+            raise Exception("Kaggle bridge not initialized. Check your Kaggle credentials in Settings.")
+
         media_path = job.get("original_media") or job.get("original_video")
         status = job["status"]
         selected_audio_idx = job.get("selected_audio_stream", 0)

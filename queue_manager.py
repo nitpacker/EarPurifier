@@ -84,7 +84,7 @@ class QueueManager:
         except Exception as e:
             logger.error(f"Failed to save job state: {e}")
 
-    def add_job(self, media_path: str, mode: str = "Cloud (Kaggle)", duration: float = 0.0, model: str = "", selected_audio_stream: int = 0, probe_result: dict = None) -> str:
+    def add_job(self, media_path: str, mode: str = "Cloud (Kaggle)", duration: float = 0.0, model: str = "", selected_audio_stream: int = 0, probe_result: dict = None, save: bool = True) -> str:
         job_id = str(uuid.uuid4())
         with self._lock:
             self.state["jobs"][job_id] = {
@@ -104,7 +104,8 @@ class QueueManager:
                 "added_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
-            self._save_state()
+            if save:
+                self._save_state()
         return job_id
 
     def update_job(self, job_id: str, updates: Dict[str, Any]):

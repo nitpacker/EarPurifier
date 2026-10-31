@@ -2,14 +2,14 @@ import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QComboBox, QCheckBox, QFormLayout, QFrame,
-    QFileDialog, QListWidget, QListWidgetItem
+    QFileDialog, QListWidget, QListWidgetItem, QScrollArea, QWidget
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 
 from .theme import (
     Theme, ThemeMode,
-    get_combobox_qss, get_checkbox_qss, get_primary_button_qss,
+    get_combobox_qss, get_checkbox_qss, get_primary_button_qss, get_scrollbar_qss,
     FONT_FAMILY, FONT_MONO
 )
 from .components import VectorAlertBadge, ModernToggleSwitch
@@ -20,9 +20,9 @@ except ImportError:
     from src.config_manager import ConfigManager
 
 try:
-    from i18n import t, is_rtl, format_delete_confirm_msg
+    from i18n import t, is_rtl, get_current_language, format_delete_confirm_msg
 except ImportError:
-    from src.i18n import t, is_rtl, format_delete_confirm_msg
+    from src.i18n import t, is_rtl, get_current_language, format_delete_confirm_msg
 
 try:
     from update_checker import GitHubUpdateChecker
@@ -469,17 +469,31 @@ class DeleteConfirmDialog(QDialog):
         return self.chk_delete_files.isChecked()
 
 
-# ─── Audio Track Selection Dialog (Channel-Strip Cards) ────────────────────────
+# ─── Unified Multi-Track Batch Audio Selection Dialog ──────────────────────────
 
 class AudioTrackSelectDialog(QDialog):
-    """Modern channel-strip card selector for multi-audio containers."""
-    def __init__(self, audio_streams: list, file_name: str, parent=None):
-        super().__init__(parent)
-        self.audio_streams = audio_streams
-        self.chosen_index = 0
+    """Unified scrollable card selector for single or batch multi-audio containers."""
+    def __init__(self, files_audio_streams, parent_or_name=None, parent=None):
+        if isinstance(files_audio_streams, dict):
+            parent_widget = parent_or_name if isinstance(parent_or_name, QWidget) else parent
+            self.files_dict = files_audio_streams
+        else:
+            if isinstance(parent_or_name, QWidget):
+                parent_widget = parent_or_name
+                file_name = "media"
+            else:
+                parent_widget = parent
+                file_name = str(parent_or_name or "media")
+            self.files_dict = {file_name: files_audio_streams or []}
+        super().__init__(parent_widget)
         self.setWindowTitle(t("track_dialog_title"))
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
+        self.resize(540, min(560, max(260, 160 + len(self.files_dict) * 85)))
         self._theme_mode = Theme.get_mode()
+
+        current_lang = getattr(self.parent(), "language", None) or get_current_language()
+        lang_is_rtl = is_rtl(current_lang)
+        self.setLayoutDirection(Qt.RightToLeft if lang_is_rtl else Qt.LeftToRight)
 
         mode = self._theme_mode
         card_bg = Theme.get_token("CARD_BG", mode)
@@ -487,18 +501,8 @@ class AudioTrackSelectDialog(QDialog):
         meta_bg = Theme.get_token("META_BG", mode)
         text_head = Theme.get_token("TEXT_HEAD", mode)
         text_muted = Theme.get_token("TEXT_MUTED", mode)
-        accent = Theme.get_token("ACCENT_EMERALD", mode)
 
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {card_bg};
-                border-radius: 12px;
-            }}
-            QLabel {{
-                color: {text_head};
-                background: transparent;
-            }}
-        """)
+        self.setStyleSheet(f"QDialog {{ background-color: {card_bg}; border-radius: 12px; }} QLabel {{ color: {text_head}; background: transparent; }}")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -508,90 +512,83 @@ class AudioTrackSelectDialog(QDialog):
         lbl_title.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {text_head};")
         layout.addWidget(lbl_title)
 
-        lbl_file = QLabel(t("track_dialog_file", file_name=file_name))
-        lbl_file.setStyleSheet(f"font-size: 11.5px; color: {text_muted};")
-        lbl_file.setWordWrap(True)
-        layout.addWidget(lbl_file)
-
         lbl_desc = QLabel(t("track_dialog_desc"))
-        lbl_desc.setStyleSheet(f"font-size: 12px; color: {text_head}; font-weight: 600;")
+        lbl_desc.setStyleSheet(f"font-size: 12px; color: {text_muted};")
         layout.addWidget(lbl_desc)
 
-        # Track list widget styled as channel strips
-        self.track_list = QListWidget()
-        self.track_list.setStyleSheet(f"""
-            QListWidget {{
-                background-color: {meta_bg};
-                border: 1px solid {card_border};
-                border-radius: 8px;
-                outline: 0px;
-                padding: 4px;
-            }}
-            QListWidget::item {{
-                padding: 8px 10px;
-                border-radius: 6px;
-                font-size: 12px;
-                color: {text_head};
-                margin-bottom: 2px;
-            }}
-            QListWidget::item:selected {{
-                background-color: rgba(16, 185, 129, 0.16);
-                border: 1.5px solid {accent};
-                font-weight: 700;
-            }}
-            QListWidget::item:hover {{
-                background-color: rgba(16, 185, 129, 0.08);
-            }}
-        """)
-        self.track_list.setSelectionMode(QListWidget.SingleSelection)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(f"QScrollArea {{ background: transparent; border: none; }} {get_scrollbar_qss(mode)}")
 
-        for i, stream in enumerate(audio_streams):
-            lang = stream.get("tags", {}).get("language", "") or "und"
-            title = stream.get("tags", {}).get("title", "") or ""
-            codec = stream.get("codec_name", "unknown").upper()
-            channels = stream.get("channels", 2)
-            ch_str = "Stereo" if channels == 2 else ("5.1 Surround" if channels == 6 else f"{channels} Ch")
+        self.scroll_widget = QWidget()
+        self.scroll_widget.setStyleSheet("background: transparent;")
+        scroll_layout = QVBoxLayout(self.scroll_widget)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(8)
 
-            title_part = f" · {title}" if title else ""
-            item_text = f"#{i + 1}  [{lang.upper()}]  {codec}  ·  {ch_str}{title_part}"
-            item = QListWidgetItem(item_text)
-            self.track_list.addItem(item)
+        self.combos = {}
 
-        self.track_list.setCurrentRow(0)
-        layout.addWidget(self.track_list)
+        for file_path, streams in self.files_dict.items():
+            card = QFrame()
+            card.setStyleSheet(f"QFrame {{ background-color: {meta_bg}; border: 1px solid {card_border}; border-radius: 8px; }}")
+            c_layout = QVBoxLayout(card)
+            c_layout.setContentsMargins(12, 10, 12, 10)
+            c_layout.setSpacing(6)
 
-        # Buttons
+            fname_lbl = QLabel(os.path.basename(file_path))
+            fname_lbl.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {text_head};")
+            fname_lbl.setWordWrap(True)
+            c_layout.addWidget(fname_lbl)
+
+            combo = QComboBox()
+            combo.setStyleSheet(get_combobox_qss(lang_is_rtl, mode))
+            stream_list = streams or []
+            if not stream_list:
+                combo.addItem("#1 [UND] AUDIO · Stereo", 0)
+            else:
+                for i, st in enumerate(stream_list):
+                    st = st or {}
+                    tags = st.get("tags") or {}
+                    st_lang = (tags.get("language", "") or "und").upper()
+                    st_title = (tags.get("title", "") or "").strip()
+                    st_codec = (st.get("codec_name") or "unknown").upper()
+                    st_ch = st.get("channels") or 2
+                    ch_str = "Stereo" if st_ch == 2 else ("5.1 Surround" if st_ch == 6 else f"{st_ch} Ch")
+                    title_str = f" · {st_title}" if st_title else ""
+                    combo.addItem(f"#{i + 1}  [{st_lang}]  {st_codec} · {ch_str}{title_str}", i)
+
+            combo.setCurrentIndex(0)
+            self.combos[file_path] = combo
+            c_layout.addWidget(combo)
+            scroll_layout.addWidget(card)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(self.scroll_widget)
+        self.track_list = self.scroll_widget
+        layout.addWidget(scroll, 1)
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
         btn_cancel = QPushButton(t("btn_cancel"))
         btn_cancel.setCursor(Qt.PointingHandCursor)
-        btn_cancel.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {meta_bg};
-                color: {Theme.get_token('TEXT_BODY')};
-                border: 1px solid {card_border};
-                padding: 7px 16px;
-                border-radius: 6px;
-                font-weight: 600;
-                font-size: 12px;
-            }}
-        """)
+        btn_cancel.setStyleSheet(f"QPushButton {{ background-color: {meta_bg}; color: {Theme.get_token('TEXT_BODY')}; border: 1px solid {card_border}; padding: 7px 16px; border-radius: 6px; font-weight: 600; font-size: 12px; }}")
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
-        btn_select = QPushButton(t("btn_select_track"))
-        btn_select.setCursor(Qt.PointingHandCursor)
-        btn_select.setStyleSheet(get_primary_button_qss(self._theme_mode))
-        btn_select.clicked.connect(self._on_select)
-        btn_layout.addWidget(btn_select)
+        btn_confirm = QPushButton(t("btn_select_track"))
+        btn_confirm.setCursor(Qt.PointingHandCursor)
+        btn_confirm.setStyleSheet(get_primary_button_qss(mode))
+        btn_confirm.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_confirm)
 
         layout.addLayout(btn_layout)
 
-    def _on_select(self):
-        row = self.track_list.currentRow()
-        self.chosen_index = row if row >= 0 else 0
-        self.accept()
+    def get_selected_tracks(self) -> dict:
+        return {f: combo.currentData() if combo.currentData() is not None else 0 for f, combo in self.combos.items()}
 
     def get_chosen_index(self) -> int:
-        return self.chosen_index
+        for combo in self.combos.values():
+            return combo.currentData() if combo.currentData() is not None else 0
+        return 0

@@ -10,6 +10,14 @@ import subprocess
 import unittest
 from unittest.mock import patch, MagicMock
 
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+test_appdata = os.path.join(root_dir, ".test_appdata")
+os.environ["APPDATA"] = test_appdata
+os.makedirs(test_appdata, exist_ok=True)
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 
@@ -66,6 +74,7 @@ class TestShutdownLifecycle(unittest.TestCase):
 
         self.assertEqual(len(_ACTIVE_SUBPROCESSES), 0)
         # Give OS 50ms to report exit
+        time.sleep(0.05)
         proc.poll()
         self.assertIsNotNone(proc.poll())
 
