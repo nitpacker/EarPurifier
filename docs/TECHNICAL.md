@@ -102,7 +102,7 @@ EarPurifier operates via an asymmetric **Dual-Engine Architecture**:
 
 ### 2.1. Thread Affinity & Event Marshalling
 To prevent thread contention and GUI freezing:
-- **UI Thread**: Owns all `QWidget` derived instances. Direct access to GUI elements from worker threads is structurally impossible.
+- **UI Thread**: Owns all `QWidget` derived instances. Direct access to GUI elements from worker threads is structurally impossible. Synchronous remote network I/O is strictly forbidden on the UI thread; credential changes via `JobProcessor.update_credentials()` only stage dirty flags in memory, leaving remote API client authentication strictly to the worker thread.
 - **Worker QThreads**:
   - `JobProcessor` (`processor_thread.py`): Manages Cloud Kaggle lifecycle, REST calls, kernel polling, and multi-threaded range downloads.
   - `LocalJobProcessor` (`local_processor.py`): Manages local CLI execution and real-time pipe parsing.
@@ -160,13 +160,13 @@ File: `main.py`
 | `ui/components.py` | `SidebarNavButton`, `EngineTelemetryPill`, `RotatingSpinner` | Main UI Thread | Vector painting state, breath timer phase | In-memory canvas rendering |
 | `ui/dialogs.py` | `SettingsDialog`, `DeleteConfirmDialog`, `AudioTrackSelectDialog` | Main UI Thread | Form entries, transient selections | Reads/writes `config.json` via `ConfigManager` |
 | `ui/theme.py` | `Theme`, `ThemeMode` | Main UI Thread | Color tokens, QSS templates, font families | Resolves SVG assets on disk |
-| `queue_manager.py` | `QueueManager` | Thread-Safe (Any) | `self.state["jobs"]` protected by `threading.RLock` | Atomic read/write `%APPDATA%/.../job_state.json` |
+| `queue_manager.py` | `QueueManager` | Thread-Safe (Any) | `self.state["jobs"]`, `self._pending_deletions` protected by `threading.RLock` | Atomic read/write `%APPDATA%/.../job_state.json` |
 | `config_manager.py`| `ConfigManager` | Thread-Safe (Any) | Application preferences, encrypted API key | Atomic read/write `%APPDATA%/.../config.json` |
 | `process_tracker.py`| `register_process`, `kill_process_tree`, `cleanup_all_subprocesses` | Thread-Safe (Any) | `_ACTIVE_SUBPROCESSES: Set[Popen]` | Subprocess signals, `taskkill` executions |
 | `processor_thread.py`| `JobProcessor` | Cloud Worker QThread | Active Kaggle kernel ID, retry counters | Network REST calls to Kaggle, temporary audio files |
 | `kaggle_bridge.py` | `KaggleBridge` | Cloud Worker QThread | Disposable dataset metadata, GCS URL tokens | Multi-threaded HTTP Range GET requests, Kaggle SDK |
 | `local_processor.py`| `LocalJobProcessor` | Local Worker QThread | Active subprocess handle, progress percentage | Subprocess pipe reading (`stdout`/`stderr`), disk audio |
-| `media_engine.py` | `get_duration`, `probe_container`, `extract_audio`, `remux_media` | Worker Thread Context| Stateless functional operations | Spawns `ffmpeg.exe` and `ffprobe.exe` subprocesses |
+| `media_engine.py` | `get_duration`, `probe_container`, `extract_audio`, `remux_media`, `_run_ffmpeg_abortable`, `JobAbortedError` | Worker Thread Context| Stateless functional operations | Spawns `ffmpeg.exe` and `ffprobe.exe` subprocesses |
 | `update_checker.py`| `GitHubUpdateChecker` | Checker QThread | Cached release metadata, SemVer tuples | HTTPS queries to raw manifest and GitHub API |
 | `logger_setup.py` | `setup_logger` | Global | Python logging handlers | Rotating disk writes to `applogs/earpurifier.log` |
 
@@ -210,26 +210,31 @@ File: `main.py`
                                   │  REMUXING   │ ◄─── media_engine.remux_media()
                                   └──────┬──────┘
                                          │ Container assembled losslessly
-                    ┌────────────────────┴────────────────────┐
-                    ▼                                         ▼
-             ┌─────────────┐                           ┌─────────────┐
-             │  COMPLETED  │                           │    ERROR    │
-             └─────────────┘                           └─────────────┘
-              (Terminal)                                (Terminal)
+                    ┌────────────────────┼────────────────────┐
+                    ▼                    ▼                    ▼
+             ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+             │  COMPLETED  │      │    ERROR    │      │   ABORTED   │
+             └─────────────┘      └─────────────┘      └─────────────┘
+              (Terminal)           (Terminal)           (Terminal)
+  * Note: Any active phase transitions directly to ABORTED on user abort, card deletion, or window close.
 ```
 
 ### 5.2. Stage-by-Stage Data Contracts
 
 1. **Queueing (`PENDING`)**:
-   - `media_engine.probe_container()` inspects input. If $> 1$ audio stream exists, `AudioTrackSelectDialog` prompts the user.
-   - `QueueManager.add_job()` captures an immutable snapshot: file path, duration, selected audio track, mode, and model name.
+   - **2-Pass Atomic Batch Pipeline**:
+     - *Pass 1 (Probing & Track Aggregation)*: `media_engine.probe_container()` probes all selected containers without mutating `QueueManager`. If any containers contain $> 1$ audio stream, a unified scrollable `AudioTrackSelectDialog` presents each multi-track file with a folded-by-default stream dropdown (defaulting strictly to the first audio stream `0:a:0`).
+     - *Pass 2 (Atomic Ingestion & UI Synchronization)*: Upon user confirmation, all jobs are committed in memory via `QueueManager.add_job(..., save=False)` and flushed to physical disk via a single atomic `QueueManager._save_state()`. This prevents premature background dequeueing ("ghost execution") and guarantees all UI cards are rendered before worker threads can claim pending jobs.
+   - Each job captures an immutable snapshot: file path, duration, selected audio track index, mode, and model name.
    - Initial state written atomically to `job_state.json`.
 2. **Extraction (`EXTRACTING`)**:
    - `started_at` ISO-8601 UTC timestamp stamped on the job.
    - Invokes `media_engine.extract_audio()` to generate a 48,000 Hz, 2-channel stereo FLAC file in `%APPDATA%/EarPurifier/temp/<job_id>/audio_<job_id[:8]>.flac`.
 3. **AI Separation Phase**:
-   - **Local Path (`PROCESSING_LOCAL`)**: `LocalJobProcessor` launches isolated `audio-separator.exe`. Real-time progress is scraped from stdout regex `r'(\d{1,3})%'` and dispatched to UI.
-   - **Cloud Path (`UPLOADING` $\to$ `PROCESSING_CLOUD` $\to$ `DOWNLOADING`)**:
+   - **ETA Engine Mechanics**:
+     - **Cloud Path (`UPLOADING` $\to$ `PROCESSING_CLOUD` $\to$ `DOWNLOADING`)**: ETA is calculated from empirical Real-Time Factors ($\text{RTF}_{\text{model}}$) on Kaggle T4 GPUs: Kim Vocal 2 ($\text{RTF} = 0.135$, ~7.5x real-time), MDX23C ($\text{RTF} = 0.270$, ~3.7x real-time), and Band-Split RoFormer ($\text{RTF} = 0.680$, ~1.45x real-time), plus bounded stage overheads for extraction, upload, container boot, download, and hardware remuxing. As stages complete, remaining ETA dynamically clamps to the sum of remaining phases.
+     - **Local Path (`PROCESSING_LOCAL`)**: `LocalJobProcessor` launches isolated `audio-separator.exe`. Real-time progress is scraped from stdout regex `r'(\d{1,3})%'` and dispatched to UI, where `JobWidget` dynamically calculates remaining time from elapsed stage time ($\text{elapsed} \times \frac{100 - P}{P} + T_{\text{remux}}$) and drives a determinate progress bar.
+   - **Cloud Infrastructure Mechanics**:
      - Creates ephemeral dataset buffer `{username}/earpurifier-audio-buffer-{job_id[:8]}`.
      - Actively polls `api.dataset_status()` every 2 seconds until verified `"ready"` (90s ceiling), eliminating blind sleep latency and unindexed dataset push errors.
      - Pushes worker kernel with injected model specifications and dynamic duration-aware session timeout (`\min(43200, \max(7200, \text{duration} \times 3.0 + 1800))`).
@@ -240,6 +245,14 @@ File: `main.py`
    - `media_engine.remux_media()` maps original video tracks (`-map 0:v? -c:v copy`), original subtitle tracks (`-map 0:s? -c:s copy`), and replaces the targeted audio stream with hardware-accelerated encoding (`aac_mf`/`aac_at`).
 5. **Completion (`COMPLETED`)**:
    - `final_elapsed_seconds` computed. Local temp folder purged. Ephemeral Kaggle dataset deleted via API.
+6. **Abortion & Teardown (`ABORTED`)**:
+   - **Trigger Paths**: User clicks "Abort" on active job card, deletes in-flight job card, or confirms exit in `CloseActiveJobDialog` during application shutdown.
+   - **Resurrection Guard**: `QueueManager.update_job()` actively blocks and suppresses any status updates attempting to revert an `ABORTED` job back to an active or `COMPLETED` status.
+   - **Transient Deletion Buffer**: Deleting an active job immediately removes it from the UI while staging its metadata and deletion parameters in `QueueManager._pending_deletions`. The worker thread evaluates `is_job_aborted()` (which returns `True` for pending deletions) and invokes `finalize_job_abort()` to execute deferred disk cleanup.
+   - **Subprocess & Remote Teardown**:
+     - Local Engine: Immediately executes `process_tracker.kill_process_tree()` on `audio-separator.exe` upon detecting abort in the stdout reader.
+     - Media Engine: `_run_ffmpeg_abortable()` polls `abort_check()` every 50–100 ms, killing FFmpeg process trees on abort and raising `JobAbortedError`.
+     - Cloud Engine: Cancels remote Kaggle kernel via `api.kernel_cancel()`, executes `delete_dataset_with_retry()` with exponential backoff to cleanly release dataset mounts, purges local temporary working directories, and halts chunk downloading.
 
 ---
 
@@ -260,10 +273,11 @@ Managed by `local_processor.py` and `dependency_manager.py`:
 
 ### 6.2. Cloud Engine & Kaggle Infrastructure
 Managed by `processor_thread.py`, `kaggle_bridge.py`, and `worker/worker.py`:
-- **Authentication**: Dynamically maps credentials. Tokens prefixed with `KGAT_` are mapped to `KAGGLE_API_TOKEN` (HTTP Bearer Auth); legacy tokens are mapped to `KAGGLE_KEY` (HTTP Basic Auth). Sets `KAGGLE_CONFIG_DIR` to a dummy path to prevent reading stale local config files.
+- **Authentication**: Dynamically maps credentials. Tokens prefixed with `KGAT_` are mapped to `KAGGLE_API_TOKEN` (HTTP Bearer Auth); legacy tokens are mapped to `KAGGLE_KEY` (HTTP Basic Auth). Sets `KAGGLE_CONFIG_DIR` to a dummy path to prevent reading stale local config files. Credential updates stage an in-memory dirty flag (`_credentials_dirty`); Kaggle REST client re-initialization occurs exclusively within worker thread context when idle (`not active_cloud`) to eliminate UI thread network freezes and avoid mid-job connection severance.
 - **Ephemeral Dataset Architecture**: Each job uses an isolated dataset slug `earpurifier-audio-buffer-<uuid>` containing the 48kHz FLAC stem and `dataset-metadata.json`, actively polled via `api.dataset_status()` until verified `"ready"`.
+- **Ephemeral Dataset Teardown & Backoff**: Dataset deletion on abort or completion calls `delete_dataset_with_retry(dataset_id)`, which applies exponential backoff on HTTP 403 Forbidden / 400 Bad Request to safely wait for Kaggle to unmount datasets from stopping kernels, while treating 404 Not Found as immediate success.
 - **Kernel Injection & Dynamic Timeout**: Modifies `worker/worker.py` in-memory using regex substitutions to bind target model filenames and expected audio stem identifiers. Computes a bounded duration-aware execution timeout (`min(43200, max(7200, duration * 3.0 + 1800))`) passed to `api.kernels_push()`.
-- **4-Thread Chunked GCS Downloader**: Bypasses Kaggle SDK output methods. Retrieves direct Google Cloud Storage signed URLs via `ApiListKernelSessionOutputRequest`, determines file size via streaming GET, and downloads across 4 concurrent threads using `Range: bytes=X-Y` requests into `.part0` through `.part3` before sequential stitching.
+- **4-Thread Chunked GCS Downloader**: Bypasses Kaggle SDK output methods. Retrieves direct Google Cloud Storage signed URLs via `ApiListKernelSessionOutputRequest`, determines file size via streaming GET, and downloads across 4 concurrent threads using `Range: bytes=X-Y` requests into `.part0` through `.part3` before sequential stitching. Accepts `abort_check` callback to cleanly stop worker download threads and purge incomplete `.part*` fragments upon user cancellation.
 
 ### 6.3. Master Cache Acceleration (`earpurifier-cloud-assets-v2`)
 - **Dataset Slug**: `verymuch/earpurifier-cloud-assets-v2` (mounted read-only under `/kaggle/input/`).
@@ -405,6 +419,8 @@ All updates to `config.json` and `job_state.json` invoke `_atomic_write_json()`:
 | **Unindexed Dataset Push Race** | Static 45s sleep pushes kernel while GCS ingestion is still unpacking, causing scheduler deferrals. | Actively polls `api.dataset_status()` every 2s until verified `"ready"`. | `kaggle_bridge.py` |
 | **Cloud GPU Queue Congestion** | Platform-wide GPU pool demand spikes leave batch kernels queued for multiple minutes. | Dynamic session timeout bounds footprint; UI freezes client-side ETA and alerts user after 2m. | `processor_thread.py`, `ui/job_widget.py` |
 | **Single-Instance Deadlocks** | Second instance attempts to initialize resources or corrupt state files. | Handshake via `QLocalSocket` activates existing instance window and immediately terminates second process via `os._exit(0)`. | `main.py` |
+| **UI Thread Remote Auth Freeze** | Synchronous Kaggle token introspection during "+ Add Media" or Settings save blocks Qt event loop for 2–5s. | Stages credentials in memory; defers `KaggleBridge` instantiation to idle cycles on the worker thread. | `processor_thread.py`, `ui/main_window.py` |
+| **Premature Batch Dequeue (Ghost Job Race)** | Single-pass queueing caused background worker to dequeue single-stream audio jobs while the multi-track dialog blocked the UI. | Enforces 2-pass atomic batch ingestion: probes and resolves track dialogs before any job enters `QueueManager`. | `ui/main_window.py`, `queue_manager.py` |
 
 ---
 

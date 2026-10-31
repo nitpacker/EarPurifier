@@ -1,3 +1,4 @@
+import re
 import os
 from datetime import datetime, timezone
 from PySide6.QtWidgets import (
@@ -19,6 +20,62 @@ except ImportError:
 
 
 # ─── 3-Zone Compact Audio Track Card Presentation View ────────────────────────
+
+# ─── Model & Stage ETA Estimators ─────────────────────────────────────────────
+
+def get_model_rtf(model_name: str) -> tuple[float, float]:
+    """Returns (rtf_multiplier, overhead_seconds) based on model architecture."""
+    m = (model_name or "").lower()
+    if "kim" in m:
+        # Kim Vocal 2: Fast ONNX model (~7.5x real-time on T4)
+        return 0.135, 45.0
+    elif "mdx" in m:
+        # MDX23C: PyTorch STFT ConvNet (~3.7x real-time on T4)
+        return 0.270, 50.0
+    elif "roformer" in m:
+        # Band-Split RoFormer: PyTorch Transformer (~1.45x real-time on T4)
+        return 0.680, 55.0
+    # Default fallback to MDX23C baseline
+    return 0.270, 50.0
+
+
+def compute_stage_estimates(duration: float, model_name: str) -> dict[str, float]:
+    """Computes empirical duration estimates (in seconds) for each pipeline stage."""
+    d = max(0.0, float(duration))
+    rtf, overhead = get_model_rtf(model_name)
+
+    t_extract = max(3.0, min(30.0, 3.0 + d * 0.005))
+    t_upload = max(20.0, min(90.0, 20.0 + d * 0.015))
+    t_cloud = overhead + (rtf * d)
+    t_download = max(8.0, min(60.0, 8.0 + d * 0.008))
+    t_remux = max(5.0, min(45.0, 5.0 + d * 0.010))
+
+    return {
+        "EXTRACTING": t_extract,
+        "UPLOADING": t_upload,
+        "PROCESSING_CLOUD": t_cloud,
+        "DOWNLOADING": t_download,
+        "REMUXING": t_remux,
+        "PROCESSING_LOCAL": max(15.0, t_extract + (rtf * d)),
+    }
+
+
+def format_eta_time(seconds: int) -> str:
+    """Formats remaining seconds into localized ETA string with hour support."""
+    secs = max(0, int(seconds))
+    if secs == 0:
+        return t("eta_anytime")
+
+    hrs, rem = divmod(secs, 3600)
+    mins, s = divmod(rem, 60)
+
+    if hrs > 0:
+        return t("eta_time_hms", hours=hrs, mins=mins)
+    elif mins > 0:
+        return t("eta_time_ms", mins=mins, secs=s)
+    else:
+        return t("eta_time_s", secs=s)
+
 
 class JobWidget(QWidget):
     """
@@ -48,6 +105,10 @@ class JobWidget(QWidget):
         self.current_status = "PENDING"
         self.current_badge_state = "queued"
         self.remaining_seconds = 0
+        self.stage_elapsed = 0
+        self.last_stage = None
+        self._last_pct = -1
+        self.eta_initialized = False
         self.is_cloud_congested = False
         self._congested_mins = 2
         self._raw_message = ""
@@ -389,6 +450,46 @@ class JobWidget(QWidget):
         self.lbl_badge.setText(text)
         self.lbl_badge.setStyleSheet(f"background-color: {bg}; color: {col}; border: 1px solid {border}; font-size: 10px; font-weight: 800; padding: 1px 7px; border-radius: 10px;")
 
+    def _recalculate_eta_on_stage_change(self, status: str):
+        """Dynamically calculates remaining seconds upon pipeline stage transitions."""
+        if self.duration <= 0.0:
+            self.lbl_eta.setText(t("eta_calculating"))
+            return
+
+        model_name = self.job_dict.get("model") or ""
+        estimates = compute_stage_estimates(self.duration, model_name)
+
+        if "Cloud" in self.mode:
+            cloud_stages = ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "DOWNLOADING", "REMUXING"]
+            if status in cloud_stages:
+                idx = cloud_stages.index(status)
+                expected_remaining = int(round(sum(estimates[st] for st in cloud_stages[idx:])))
+                if status in ["DOWNLOADING", "REMUXING"]:
+                    self.remaining_seconds = min(self.remaining_seconds, expected_remaining) if self.remaining_seconds > 0 else expected_remaining
+                elif not getattr(self, "eta_initialized", False):
+                    self.remaining_seconds = expected_remaining
+                    self.eta_initialized = True
+                else:
+                    self.remaining_seconds = min(self.remaining_seconds, expected_remaining) if self.remaining_seconds > 0 else expected_remaining
+                self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+            elif status == "PENDING":
+                self.lbl_eta.setText(t("eta_in_queue"))
+        else:
+            if status == "EXTRACTING":
+                rem = int(round(estimates["EXTRACTING"] + estimates["PROCESSING_LOCAL"] + estimates["REMUXING"]))
+                self.remaining_seconds = rem
+                self.eta_initialized = True
+                self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+            elif status == "PROCESSING_LOCAL":
+                rem = int(round(estimates["PROCESSING_LOCAL"] + estimates["REMUXING"]))
+                self.remaining_seconds = rem
+                self.eta_initialized = True
+                self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+            elif status == "REMUXING":
+                rem = int(round(estimates["REMUXING"]))
+                self.remaining_seconds = min(self.remaining_seconds, rem) if self.remaining_seconds > 0 else rem
+                self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+
     def set_cloud_congested(self, congested: bool, mins: int = 2):
         self.is_cloud_congested = congested
         self._congested_mins = mins
@@ -402,11 +503,7 @@ class JobWidget(QWidget):
         else:
             accent_blue = Theme.get_token("ACCENT_BLUE", self._theme_mode)
             self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_blue}; background: transparent;")
-            if self.remaining_seconds > 0:
-                rmins, rsecs = divmod(self.remaining_seconds, 60)
-                self.lbl_eta.setText(t("eta_time_ms", mins=rmins, secs=rsecs) if rmins > 0 else t("eta_time_s", secs=rsecs))
-            else:
-                self.lbl_eta.setText(t("eta_anytime"))
+            self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
 
     def set_selection_mode(self, enabled: bool):
         self.chk_select.setVisible(enabled)
@@ -427,26 +524,34 @@ class JobWidget(QWidget):
             return
 
         self.elapsed_seconds += 1
+        self.stage_elapsed += 1
         self.lbl_meta_dur.setText(self._format_elapsed(self.elapsed_seconds))
 
-        if self.mode == "Cloud (Kaggle)":
-            if self.is_cloud_congested:
-                self.lbl_eta.setText(t("eta_cloud_congested", mins=self._congested_mins))
-            elif self.current_status in ["PENDING", "EXTRACTING", "UPLOADING"]:
-                self.lbl_eta.setText(t("eta_calculating"))
-            elif self.current_status in ["PROCESSING_CLOUD", "DOWNLOADING", "REMUXING"]:
-                if not getattr(self, "eta_initialized", False):
-                    self.remaining_seconds = max(60, int(150 + (self.duration * 1.5)))
-                    self.eta_initialized = True
-                self.remaining_seconds -= 1
-                if self.remaining_seconds > 0:
-                    mins, secs = divmod(self.remaining_seconds, 60)
-                    self.lbl_eta.setText(t("eta_time_ms", mins=mins, secs=secs) if mins > 0 else t("eta_time_s", secs=secs))
-                else:
-                    self.lbl_eta.setText(t("eta_anytime"))
+        if self.is_cloud_congested:
+            self.lbl_eta.setText(t("eta_cloud_congested", mins=self._congested_mins))
+            return
+
+        if self.duration <= 0.0:
+            self.lbl_eta.setText(t("eta_calculating"))
+            return
+
+        if not getattr(self, "eta_initialized", False):
+            self._recalculate_eta_on_stage_change(self.current_status)
+
+        if self.remaining_seconds > 0:
+            self.remaining_seconds -= 1
+
+        self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
 
     def update_status(self, status: str):
-        self.current_status = status
+        if status != self.current_status:
+            self.last_stage = self.current_status
+            self.current_status = status
+            self.stage_elapsed = 0
+            if status in ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "PROCESSING_LOCAL", "DOWNLOADING", "REMUXING"]:
+                self._recalculate_eta_on_stage_change(status)
+        else:
+            self.current_status = status
         mode = self._theme_mode
         accent_blue = Theme.get_token("ACCENT_BLUE", mode)
         accent_emerald = Theme.get_token("ACCENT_EMERALD", mode)
@@ -521,11 +626,12 @@ class JobWidget(QWidget):
             self._set_badge_style("running")
             self.lbl_meta_dur.setText(self._format_elapsed(self.elapsed_seconds))
             if not self.is_cloud_congested:
-                self.sep3.setVisible(self.mode == "Cloud (Kaggle)")
-                self.lbl_eta.setVisible(self.mode == "Cloud (Kaggle)")
+                self.sep3.setVisible(True)
+                self.lbl_eta.setVisible(True)
                 self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_blue}; background: transparent;")
             self.progress.setVisible(True)
-            self.progress.setRange(0, 0)
+            if "Local" not in self.mode or self._last_pct < 0:
+                self.progress.setRange(0, 0)
             self.lbl_elapsed.setVisible(False)
             self.btn_show_folder.setVisible(False)
             if not self._raw_message or self._raw_message == "Waiting in queue...":
@@ -546,18 +652,40 @@ class JobWidget(QWidget):
             if message == "QUEUE_RESOLVED":
                 return
 
+        # Scrape progress percentage in local mode for live progress bar and ETA updates
+        if "Local" in self.mode and self.current_status == "PROCESSING_LOCAL":
+            match = re.search(r'(\d{1,3})%', message)
+            if match:
+                try:
+                    pct = max(0, min(100, int(match.group(1))))
+                    self._last_pct = pct
+                    self.progress.setRange(0, 100)
+                    self.progress.setValue(pct)
+                    if pct >= 5 and self.stage_elapsed > 2:
+                        rem_infer = self.stage_elapsed * (100.0 - pct) / float(pct)
+                        estimates = compute_stage_estimates(self.duration, self.job_dict.get("model", ""))
+                        self.remaining_seconds = max(5, int(round(rem_infer + estimates["REMUXING"])))
+                        self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+                except Exception:
+                    pass
+
         self._raw_message = message
         self.lbl_message.setText(translate_worker_message(message))
 
     def update_state(self, job_data: dict):
         self.job_dict = job_data
-        if "duration" in job_data:
-            self.duration = job_data["duration"]
+        duration_updated = False
+        if "duration" in job_data and job_data["duration"] > 0:
+            if self.duration != job_data["duration"]:
+                self.duration = job_data["duration"]
+                duration_updated = True
         if "final_elapsed_seconds" in job_data:
             self.elapsed_seconds = int(job_data["final_elapsed_seconds"])
             self.lbl_meta_dur.setText(self._format_elapsed(self.elapsed_seconds))
         if "status" in job_data and job_data["status"] != self.current_status:
             self.update_status(job_data["status"])
+        elif duration_updated and self.current_status in ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "PROCESSING_LOCAL"]:
+            self._recalculate_eta_on_stage_change(self.current_status)
         if "message" in job_data and job_data["message"] != self._raw_message:
             self.update_message(job_data["message"])
 
@@ -576,4 +704,12 @@ class JobWidget(QWidget):
             self.lbl_message.setText(translate_worker_message(self._raw_message))
         if self.is_cloud_congested:
             self.lbl_eta.setText(t("eta_cloud_congested", mins=self._congested_mins))
-
+        elif self.current_status == "PENDING":
+            self.lbl_eta.setText(t("eta_in_queue"))
+        elif self.current_status == "COMPLETED":
+            self.lbl_eta.setText(t("meta_saved_to_output"))
+        elif self.current_status in ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "PROCESSING_LOCAL", "DOWNLOADING", "REMUXING"]:
+            if self.duration <= 0.0:
+                self.lbl_eta.setText(t("eta_calculating"))
+            else:
+                self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
