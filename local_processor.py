@@ -37,14 +37,17 @@ class LocalJobProcessor(QThread):
             job_id = self.queue_manager.get_next_pending_job(mode="Local (GPU)")
             if job_id:
                 job = self.queue_manager.get_job(job_id)
-                if job.get("status") == "ABORTED":
+                if self.queue_manager.is_job_aborted(job_id):
                     continue
                 try:
                     self.process_local_job(job_id, job)
                 except Exception as e:
-                    logger.exception(f"Error processing local job {job_id}")
-                    self._update_status(job_id, "ERROR")
-                    self.error_job.emit(job_id, str(e))
+                    if self.queue_manager.is_job_aborted(job_id):
+                        logger.info(f"Local job {job_id} was aborted, skipping error dispatch.")
+                    else:
+                        logger.exception(f"Error processing local job {job_id}")
+                        self._update_status(job_id, "ERROR")
+                        self.error_job.emit(job_id, str(e))
             else:
                 for _ in range(20):
                     if not self.running:
@@ -59,13 +62,42 @@ class LocalJobProcessor(QThread):
         logger.info(f"[{job_id}] {message}")
         self.progress_update.emit(job_id, message)
 
+    def _handle_local_abort(self, job_id: str, temp_dir: str):
+        self._log(job_id, "Aborting: Terminating local AI engine and cleaning up...")
+        if self.current_process is not None:
+            try:
+                from process_tracker import kill_process_tree, unregister_process
+                kill_process_tree(self.current_process.pid)
+                self.current_process.kill()
+                unregister_process(self.current_process)
+            except Exception:
+                pass
+            self.current_process = None
+
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception as e:
+            logger.warning(f"Failed to remove temp dir on abort: {e}")
+
+        self.queue_manager.finalize_job_abort(job_id)
+        if job_id in self.queue_manager.get_all_jobs():
+            self._update_status(job_id, "ABORTED")
+            self.queue_manager.update_job(job_id, {"message": "Job aborted and cleaned up."})
+        self._log(job_id, "Job aborted and cleaned up.")
+
     def process_local_job(self, job_id, job):
         if not DependencyManager.has_local_engine():
             raise RuntimeError("Local Engine is not installed.")
 
         temp_dir = os.path.join(self.config.appdata_dir, "temp", job_id)
         os.makedirs(temp_dir, exist_ok=True)
-        
+        is_aborted = lambda: not self.running or self.queue_manager.is_job_aborted(job_id)
+
+        if is_aborted():
+            self._handle_local_abort(job_id, temp_dir)
+            return
+
         try:
             media_path = job.get("original_media") or job.get("original_video")
             selected_audio_idx = job.get("selected_audio_stream", 0)
@@ -85,13 +117,27 @@ class LocalJobProcessor(QThread):
                 except Exception as e:
                     logger.warning(f"Could not determine media duration: {e}")
             
+            if is_aborted():
+                self._handle_local_abort(job_id, temp_dir)
+                return
+
             self._update_status(job_id, "EXTRACTING")
             self._log(job_id, "Extracting lossless FLAC...")
             
             flac_path = os.path.join(temp_dir, "audio.flac")
-            extract_audio(media_path, flac_path, stream_index=selected_audio_idx)
+            try:
+                extract_audio(media_path, flac_path, stream_index=selected_audio_idx, abort_check=is_aborted)
+            except Exception:
+                if is_aborted():
+                    self._handle_local_abort(job_id, temp_dir)
+                    return
+                raise
+
+            if is_aborted():
+                self._handle_local_abort(job_id, temp_dir)
+                return
+
             orig_duration = job.get("duration", 0.0)
-            
             self.queue_manager.update_job(job_id, {"flac_audio": flac_path})
             
             # Local AI Processing
@@ -147,6 +193,9 @@ class LocalJobProcessor(QThread):
             captured_output = []
             
             while True:
+                if is_aborted():
+                    self._handle_local_abort(job_id, temp_dir)
+                    return
                 line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break
@@ -164,6 +213,10 @@ class LocalJobProcessor(QThread):
                             
             process.wait()
             self.current_process = None
+            if is_aborted():
+                self._handle_local_abort(job_id, temp_dir)
+                return
+
             full_output = "".join(captured_output)
 
             if process.returncode != 0:
@@ -188,11 +241,21 @@ class LocalJobProcessor(QThread):
                 files_found = os.listdir(temp_dir)
                 raise RuntimeError(f"Expected vocal track not found in output directory.\nFiles present: {files_found}\nProcess logs:\n{full_output.strip()}")
                 
+            if is_aborted():
+                self._handle_local_abort(job_id, temp_dir)
+                return
+
             self._update_status(job_id, "REMUXING")
             self._log(job_id, "Padding/Trimming audio and Remuxing media...")
             
             padded_wav = os.path.join(temp_dir, "clean_padded.wav")
-            pad_or_trim_audio(clean_wav, orig_duration, padded_wav)
+            try:
+                pad_or_trim_audio(clean_wav, orig_duration, padded_wav, abort_check=is_aborted)
+            except Exception:
+                if is_aborted():
+                    self._handle_local_abort(job_id, temp_dir)
+                    return
+                raise
             
             # Setup output
             output_folder = self.config.get_output_folder(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -205,7 +268,18 @@ class LocalJobProcessor(QThread):
             base_name, ext = os.path.splitext(os.path.basename(media_path))
             out_media = os.path.join(output_folder, f"{base_name}_purified{ext}")
             
-            remux_media(media_path, padded_wav, out_media, probe_result, chosen_stream_idx=selected_audio_idx)
+            try:
+                remux_media(media_path, padded_wav, out_media, probe_result, chosen_stream_idx=selected_audio_idx, abort_check=is_aborted)
+            except Exception:
+                if is_aborted():
+                    self._handle_local_abort(job_id, temp_dir)
+                    return
+                raise
+
+            if is_aborted():
+                self._handle_local_abort(job_id, temp_dir)
+                return
+
             self.queue_manager.update_job(job_id, {"output_media": out_media, "output_video": out_media})
             
             self._update_status(job_id, "COMPLETED")

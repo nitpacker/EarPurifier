@@ -4,7 +4,8 @@ import shutil
 import subprocess
 import logging
 import json
-from typing import Optional
+import time
+from typing import Optional, Callable
 
 try:
     from .dependency_manager import DependencyManager
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 class MediaEngineError(Exception):
     pass
 
+class JobAbortedError(MediaEngineError):
+    """Raised when an operation is cancelled/aborted by the user."""
+    pass
+
 _FASTSTART_EXTS = {".mp4", ".mov", ".m4a", ".m4b"}
 
 _VALID_DISPOSITIONS = {
@@ -24,6 +29,53 @@ _VALID_DISPOSITIONS = {
     "clean_effects", "attached_pic", "captions", "descriptions",
     "dependent", "metadata",
 }
+
+def _run_ffmpeg_abortable(cmd: list, abort_check: Optional[Callable[[], bool]] = None, timeout: float = 180.0) -> subprocess.CompletedProcess:
+    """
+    Executes an FFmpeg command with real-time abort checks and process-tree registration.
+    If abort_check() returns True, the subprocess and all children are forcefully killed.
+    """
+    kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+
+    try:
+        from process_tracker import register_process, unregister_process, kill_process_tree
+    except ImportError:
+        from .process_tracker import register_process, unregister_process, kill_process_tree
+
+    proc = subprocess.Popen(cmd, **kwargs)
+    register_process(proc)
+
+    start_time = time.time()
+    try:
+        while proc.poll() is None:
+            if abort_check and abort_check():
+                kill_process_tree(proc.pid)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise JobAbortedError("FFmpeg execution aborted by user.")
+            if timeout and (time.time() - start_time) > timeout:
+                kill_process_tree(proc.pid)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            time.sleep(0.05)
+
+        stdout, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        unregister_process(proc)
 
 def get_duration(media_path: str) -> float:
     """
@@ -134,7 +186,7 @@ def probe_container(media_path: str) -> dict:
         "format": probe_data.get("format") or {},
     }
 
-def extract_audio(media_path: str, output_flac: str, stream_index: int = 0) -> str:
+def extract_audio(media_path: str, output_flac: str, stream_index: int = 0, abort_check: Optional[Callable[[], bool]] = None) -> str:
     """
     Extracts a specific audio stream from media as a 48kHz stereo lossless FLAC.
     Downmixing to stereo (-ac 2) is mandatory as the AI models (RoFormer, MDX23C,
@@ -159,16 +211,20 @@ def extract_audio(media_path: str, output_flac: str, stream_index: int = 0) -> s
     ]
     
     try:
-        kwargs = {"capture_output": True, "text": True, "check": True}
-        if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
-        subprocess.run(cmd, **kwargs)
+        _run_ffmpeg_abortable(cmd, abort_check=abort_check)
         return output_flac
+    except JobAbortedError:
+        if os.path.exists(output_flac):
+            try:
+                os.remove(output_flac)
+            except OSError:
+                pass
+        raise
     except subprocess.CalledProcessError as e:
         logger.error(f"ffmpeg extraction failed: {e.stderr}")
         raise MediaEngineError(f"Failed to extract audio from {media_path}") from e
 
-def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str) -> str:
+def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str, abort_check: Optional[Callable[[], bool]] = None) -> str:
     """
     Pads with silence or trims the audio to exactly match target_duration.
     Guards strictly against 0 or invalid target_duration to avoid truncating audio to 0 seconds.
@@ -177,16 +233,19 @@ def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str)
     if not ffmpeg_exe:
         raise MediaEngineError("ffmpeg is missing. Please restart the app to install it.")
 
-    kwargs = {"capture_output": True, "text": True, "check": True}
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
-
     if target_duration <= 0.0:
         logger.warning(f"Target duration is invalid ({target_duration}s). Skipping pad/trim to prevent audio destruction.")
         try:
             cmd = [ffmpeg_exe, "-y", "-i", audio_path, output_path]
-            subprocess.run(cmd, **kwargs)
+            _run_ffmpeg_abortable(cmd, abort_check=abort_check)
             return output_path
+        except JobAbortedError:
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+            raise
         except Exception:
             shutil.copyfile(audio_path, output_path)
             return output_path
@@ -210,8 +269,15 @@ def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str)
     cmd.append(output_path)
     
     try:
-        subprocess.run(cmd, **kwargs)
+        _run_ffmpeg_abortable(cmd, abort_check=abort_check)
         return output_path
+    except JobAbortedError:
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+        raise
     except subprocess.CalledProcessError as e:
         logger.error(f"ffmpeg pad/trim failed: {e.stderr}")
         raise MediaEngineError(f"Failed to pad/trim audio {audio_path}") from e
@@ -268,7 +334,8 @@ def remux_media(
     clean_audio: str,
     output_media: str,
     probe_result: dict,
-    chosen_stream_idx: int = 0
+    chosen_stream_idx: int = 0,
+    abort_check: Optional[Callable[[], bool]] = None
 ) -> str:
     """
     Unified stream-graph remuxer for both video and audio-only containers.
@@ -295,10 +362,6 @@ def remux_media(
     encoders_to_try = [primary_encoder]
     if primary_encoder in ("aac_mf", "aac_at") and "aac" not in encoders_to_try:
         encoders_to_try.append("aac")
-
-    kwargs = {"capture_output": True, "text": True, "check": True}
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
 
     last_error = None
     for enc in encoders_to_try:
@@ -359,8 +422,15 @@ def remux_media(
         cmd.append(output_media)
 
         try:
-            subprocess.run(cmd, **kwargs)
+            _run_ffmpeg_abortable(cmd, abort_check=abort_check)
             return output_media
+        except JobAbortedError:
+            if os.path.exists(output_media):
+                try:
+                    os.remove(output_media)
+                except OSError:
+                    pass
+            raise
         except subprocess.CalledProcessError as e:
             last_error = e
             logger.warning(f"Remuxing with encoder '{enc}' failed: {e.stderr}. Trying fallback...")

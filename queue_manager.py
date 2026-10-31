@@ -41,6 +41,7 @@ def _atomic_write_json(file_path: str, data: dict, indent: int = 2):
 class QueueManager:
     def __init__(self):
         self._lock = threading.RLock()
+        self._pending_deletions: Dict[str, Dict[str, Any]] = {}
         self.app_data_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "EarPurifier")
         self.state_file = os.path.join(self.app_data_dir, "job_state.json")
         os.makedirs(self.app_data_dir, exist_ok=True)
@@ -112,6 +113,13 @@ class QueueManager:
         with self._lock:
             if job_id in self.state["jobs"]:
                 job = self.state["jobs"][job_id]
+                # Invariant: Guard against resurrecting an aborted job
+                if job.get("status") == "ABORTED" and "status" in updates and updates["status"] not in ["PENDING", "ABORTED"]:
+                    logger.info(f"QueueManager: Suppressed resurrection of aborted job {job_id} to status '{updates['status']}'.")
+                    updates = {k: v for k, v in updates.items() if k != "status"}
+                    if not updates:
+                        return
+
                 job.update(updates)
                 now = datetime.now(timezone.utc)
                 job["updated_at"] = now.isoformat()
@@ -142,6 +150,40 @@ class QueueManager:
         with self._lock:
             return copy.deepcopy(self.state["jobs"])
 
+    def is_job_aborted(self, job_id: str) -> bool:
+        """
+        Thread-safe check to determine if a job has been aborted or deleted.
+        Returns True if:
+        1. The job was marked for deletion mid-execution.
+        2. The job was deleted from state.
+        3. The job status is explicitly set to 'ABORTED'.
+        """
+        with self._lock:
+            if job_id in self._pending_deletions:
+                return True
+            job = self.state["jobs"].get(job_id)
+            if not job:
+                return True
+            return job.get("status") == "ABORTED"
+
+    def get_pending_deletion_info(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            if job_id in self._pending_deletions:
+                return copy.deepcopy(self._pending_deletions[job_id])
+            return None
+
+    def finalize_job_abort(self, job_id: str):
+        """Purges any transient tracking for an aborted or deleted job once worker cleanup completes."""
+        with self._lock:
+            info = self._pending_deletions.pop(job_id, None)
+            if info and info.get("delete_output"):
+                out_file = info.get("output_media") or info.get("output_video")
+                if out_file and os.path.exists(out_file) and os.path.isfile(out_file):
+                    try:
+                        os.remove(out_file)
+                    except OSError as e:
+                        logger.warning(f"Could not delete output file on finalize: {e}")
+
     def get_next_pending_job(self, mode: str = "Cloud (Kaggle)") -> Optional[str]:
         with self._lock:
             for job_id, job in self.state["jobs"].items():
@@ -156,10 +198,13 @@ class QueueManager:
                     return True
             return False
 
-    def abort_job(self, job_id: str):
+    def abort_job(self, job_id: str, message: str = ""):
         with self._lock:
             if job_id in self.state["jobs"]:
-                self.update_job(job_id, {"status": "ABORTED"})
+                updates = {"status": "ABORTED"}
+                if message:
+                    updates["message"] = message
+                self.update_job(job_id, updates)
 
     def delete_job(self, job_id: str, delete_output: bool = False) -> bool:
         with self._lock:
@@ -173,6 +218,19 @@ class QueueManager:
                         os.remove(out_file)
                     except OSError as e:
                         logger.warning(f"Could not delete output file {out_file}: {e}")
+
+            # If deleting an active job, record in _pending_deletions so workers stop cleanly
+            is_active = job.get("status") in [
+                "EXTRACTING", "UPLOADING", "PROCESSING_CLOUD",
+                "DOWNLOADING", "REMUXING", "PROCESSING_LOCAL"
+            ]
+            if is_active:
+                snapshot = copy.deepcopy(job)
+                snapshot["status"] = "ABORTED"
+                snapshot["delete_output"] = delete_output
+                self._pending_deletions[job_id] = snapshot
+                logger.info(f"QueueManager: Active job {job_id} marked for deletion and abort.")
+
             del self.state["jobs"][job_id]
             self._save_state()
             return True

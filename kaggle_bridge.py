@@ -6,7 +6,7 @@ import shutil
 import time
 import logging
 import certifi
-from typing import Optional
+from typing import Optional, Callable
 
 # Ensure sys.exit is available if Kaggle SDK attempts to exit on failed auth
 if not hasattr(builtins, "exit"):
@@ -159,8 +159,8 @@ class KaggleBridge:
         else:
             return "QUEUED"
             
-    def download_output(self, kernel_id: str, download_dir: str, progress_callback=None):
-        """Downloads the output of the completed kernel robustly with resume support."""
+    def download_output(self, kernel_id: str, download_dir: str, progress_callback=None, abort_check: Optional[Callable[[], bool]] = None):
+        """Downloads the output of the completed kernel robustly with resume support and abort awareness."""
         logger.info(f"Downloading output for {kernel_id}...")
         
         from kagglesdk.kernels.types.kernels_api_service import ApiListKernelSessionOutputRequest
@@ -215,6 +215,8 @@ class KaggleBridge:
                     
                 headers = {"Range": f"bytes={start}-{end}"}
                 for attempt in range(5):
+                    if abort_check and abort_check():
+                        return None
                     written_so_far = 0
                     try:
                         res = requests.get(url, headers=headers, stream=True, timeout=45)
@@ -223,6 +225,8 @@ class KaggleBridge:
                             
                         with open(part_file, "wb") as f:
                             for chunk in res.iter_content(chunk_size=1024*1024):
+                                if abort_check and abort_check():
+                                    return None
                                 if chunk:
                                     f.write(chunk)
                                     chunk_len = len(chunk)
@@ -240,11 +244,18 @@ class KaggleBridge:
                         if os.path.getsize(part_file) == expected_size:
                             return part_file
                     except Exception as e:
+                        if abort_check and abort_check():
+                            return None
                         logger.warning(f"Thread {part_num} attempt {attempt+1} failed: {e}")
                         with progress_lock:
                             downloaded_bytes -= written_so_far
                         time.sleep(2)
+                if abort_check and abort_check():
+                    return None
                 raise Exception(f"Failed to fully download {item.file_name} part {part_num} after 5 attempts.")
+
+            if abort_check and abort_check():
+                raise KaggleError("Download aborted by user.")
 
             # Execute threaded downloads
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
@@ -256,6 +267,16 @@ class KaggleBridge:
                     
                 part_files = [f.result() for f in futures]
                 
+            if (abort_check and abort_check()) or any(pf is None for pf in part_files):
+                for i in range(num_threads):
+                    pf = f"{outfile}.part{i}"
+                    if os.path.exists(pf):
+                        try:
+                            os.remove(pf)
+                        except OSError:
+                            pass
+                raise KaggleError("Download aborted by user.")
+
             # Stitch files together
             logger.info(f"Stitching {num_threads} parts for {item.file_name}...")
             with open(outfile, "wb") as final_f:
@@ -282,3 +303,34 @@ class KaggleBridge:
             logger.info(f"Successfully cancelled/deleted kernel {kernel_id} on Kaggle.")
         except Exception as e:
             logger.warning(f"Could not cancel kernel {kernel_id} on Kaggle: {e}")
+
+    def delete_dataset_with_retry(self, dataset_id: str, max_retries: int = 5, initial_delay: float = 2.0) -> bool:
+        """
+        Deletes a Kaggle dataset buffer, retrying if Kaggle locks the dataset due to an in-flight kernel
+        or unpacking. Eliminates 403 Forbidden errors when aborting active cloud jobs.
+        """
+        if not dataset_id or "/" not in dataset_id:
+            return False
+        owner, slug = dataset_id.split("/")
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                self.api.dataset_delete(owner, slug, no_confirm=True)
+                logger.info(f"Successfully deleted Kaggle dataset {dataset_id} (attempt {attempt + 1}).")
+                return True
+            except Exception as e:
+                err_str = str(e).lower()
+                if "not found" in err_str or "404" in err_str:
+                    logger.info(f"Dataset {dataset_id} already deleted or not found on Kaggle.")
+                    return True
+                logger.warning(
+                    f"Kaggle dataset {dataset_id} deletion returned: {e}. "
+                    f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})..."
+                )
+                start_sleep = time.time()
+                while time.time() - start_sleep < delay:
+                    time.sleep(0.2)
+                delay = min(delay * 1.5, 6.0)
+
+        logger.error(f"Failed to delete Kaggle dataset {dataset_id} after {max_retries} attempts.")
+        return False

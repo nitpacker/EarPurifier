@@ -585,7 +585,7 @@ class MainWindow(QMainWindow):
                 getattr(self, n, None) for n in
                 ['cloud_thread', 'local_thread', 'ffmpeg_thread', 'engine_thread', 'model_thread', 'update_checker']
             ]
-            terminate_qt_threads([t for t in threads if t is not None], timeout_ms=500)
+            terminate_qt_threads([t for t in threads if t is not None], timeout_ms=1500)
             cleanup_all_subprocesses()
         except Exception:
             pass
