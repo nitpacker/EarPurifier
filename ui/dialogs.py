@@ -182,9 +182,15 @@ class SettingsDialog(QDialog):
         self.cmb_model.addItems([
             "SOTA (RoFormer) - Requires High-End GPU",
             "Mid (MDX23C) - Balanced Quality & Speed",
-            "Low (MDXNET) - Fast & Low VRAM"
+            "Fast (Kim Vocal 2) - Fast & Low VRAM"
         ])
-        self.cmb_model.setCurrentText(self.config.get("local_model"))
+        cfg_model = self.config.get("local_model", "")
+        if "MDX23C" in cfg_model:
+            self.cmb_model.setCurrentIndex(1)
+        elif "Kim" in cfg_model or "MDXNET" in cfg_model:
+            self.cmb_model.setCurrentIndex(2)
+        else:
+            self.cmb_model.setCurrentIndex(0)
         self.cmb_model.setStyleSheet(get_combobox_qss(is_rtl(current_lang), self._theme_mode))
         form_general.addRow(t("settings_local_model"), self.cmb_model)
 

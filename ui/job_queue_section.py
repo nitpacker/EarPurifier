@@ -61,7 +61,7 @@ class JobQueueSection(QWidget):
         return t("cloud_engine_title") if "Cloud" in self.mode else t("local_engine_title")
 
     def _get_engine_subtitle(self) -> str:
-        return t("cloud_engine_sub") if "Cloud" in self.mode else t("local_engine_sub_default")
+        return t("cloud_engine_sub") if "Cloud" in self.mode else t("local_engine_sub_roformer")
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
