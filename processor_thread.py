@@ -4,11 +4,11 @@ import logging
 from PySide6.QtCore import QThread, Signal
 try:
     from .queue_manager import QueueManager
-    from .media_engine import extract_audio, pad_or_trim_audio, remux_video, get_duration
+    from .media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
     from .kaggle_bridge import KaggleBridge
 except ImportError:
     from queue_manager import QueueManager
-    from media_engine import extract_audio, pad_or_trim_audio, remux_video, get_duration
+    from media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
     from kaggle_bridge import KaggleBridge
 
 logger = logging.getLogger(__name__)
@@ -153,19 +153,26 @@ class JobProcessor(QThread):
     def process_job(self, job_id: str, job: dict):
         # Capture the current bridge so mid-job credential changes don't corrupt ongoing requests
         bridge = self.kaggle_bridge
-        video_path = job["original_video"]
+        media_path = job.get("original_media") or job.get("original_video")
         status = job["status"]
+        selected_audio_idx = job.get("selected_audio_stream", 0)
+        probe_result = job.get("probe_result")
+        if not probe_result:
+            try:
+                probe_result = probe_container(media_path)
+            except Exception:
+                probe_result = {}
         temp_dir = os.path.join(self.queue_manager.app_data_dir, "temp", job_id)
         os.makedirs(temp_dir, exist_ok=True)
         
         if job.get("duration", 0.0) == 0.0:
             try:
-                duration = get_duration(video_path)
+                duration = get_duration(media_path)
                 if duration > 0.0:
                     self.queue_manager.update_job(job_id, {"duration": duration})
                     job["duration"] = duration
             except Exception as e:
-                logger.warning(f"Could not determine video duration: {e}")
+                logger.warning(f"Could not determine media duration: {e}")
         
         # Use a job-stamped audio filename so Kaggle NEVER serves a stale file from a previous job
         job_tag = job_id[:8]
@@ -186,7 +193,7 @@ class JobProcessor(QThread):
         if status in ["PENDING", "EXTRACTING"]:
             self._update_status(job_id, "EXTRACTING")
             self._log(job_id, "Extracting lossless FLAC...")
-            extract_audio(video_path, flac_path)
+            extract_audio(media_path, flac_path, stream_index=selected_audio_idx)
             self.queue_manager.update_job(job_id, {"flac_audio": flac_path, "stamped_audio_name": stamped_audio_name})
             status = "UPLOADING"
             
@@ -370,7 +377,7 @@ class JobProcessor(QThread):
         # 5. REMUXING
         if status == "REMUXING":
             self._update_status(job_id, "REMUXING")
-            self._log(job_id, "Padding/Trimming audio and Remuxing video...")
+            self._log(job_id, "Padding/Trimming audio and Remuxing media...")
             
             orig_duration = job.get("duration", 0.0)
             # Make sure clean_wav exists (sometimes it's downloaded as clean_vocals.flac depending on worker)
@@ -396,11 +403,11 @@ class JobProcessor(QThread):
             except Exception:
                 pass # If it fails (e.g. Defender), ffmpeg might fail later, but we tried
                 
-            base_name = os.path.splitext(os.path.basename(video_path))[0]
-            out_video = os.path.join(output_folder, f"{base_name}_purified.mp4")
+            base_name, ext = os.path.splitext(os.path.basename(media_path))
+            out_media = os.path.join(output_folder, f"{base_name}_purified{ext}")
             
-            remux_video(video_path, padded_wav, out_video)
-            self.queue_manager.update_job(job_id, {"output_video": out_video})
+            remux_media(media_path, padded_wav, out_media, probe_result, chosen_stream_idx=selected_audio_idx)
+            self.queue_manager.update_job(job_id, {"output_media": out_media, "output_video": out_media})
             
             # Housekeeping / Cleanup (Points 3, 12)
             try:

@@ -84,19 +84,23 @@ class QueueManager:
         except Exception as e:
             logger.error(f"Failed to save job state: {e}")
 
-    def add_job(self, video_path: str, mode: str = "Cloud (Kaggle)", duration: float = 0.0, model: str = "") -> str:
+    def add_job(self, media_path: str, mode: str = "Cloud (Kaggle)", duration: float = 0.0, model: str = "", selected_audio_stream: int = 0, probe_result: dict = None) -> str:
         job_id = str(uuid.uuid4())
         with self._lock:
             self.state["jobs"][job_id] = {
-                "original_video": video_path,
+                "original_media": media_path,
+                "original_video": media_path,
                 "flac_audio": "",
                 "clean_wav": "",
+                "output_media": "",
                 "output_video": "",
                 "status": "PENDING",
                 "kaggle_kernel_id": "",
                 "mode": mode,
                 "model": model,
                 "duration": duration,
+                "selected_audio_stream": selected_audio_stream,
+                "probe_result": probe_result or {},
                 "added_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
@@ -161,8 +165,8 @@ class QueueManager:
             if job_id not in self.state["jobs"]:
                 return False
             job = self.state["jobs"][job_id]
-            if delete_output and job.get("output_video"):
-                out_file = job["output_video"]
+            out_file = job.get("output_media") or job.get("output_video")
+            if delete_output and out_file:
                 if os.path.exists(out_file) and os.path.isfile(out_file):
                     try:
                         os.remove(out_file)

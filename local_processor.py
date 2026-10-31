@@ -8,12 +8,12 @@ import shutil
 from PySide6.QtCore import QThread, Signal
 try:
     from .queue_manager import QueueManager
-    from .media_engine import extract_audio, pad_or_trim_audio, remux_video, get_duration
+    from .media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
     from .config_manager import ConfigManager
     from .dependency_manager import DependencyManager
 except ImportError:
     from queue_manager import QueueManager
-    from media_engine import extract_audio, pad_or_trim_audio, remux_video, get_duration
+    from media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
     from config_manager import ConfigManager
     from dependency_manager import DependencyManager
 
@@ -67,22 +67,29 @@ class LocalJobProcessor(QThread):
         os.makedirs(temp_dir, exist_ok=True)
         
         try:
-            video_path = job["original_video"]
+            media_path = job.get("original_media") or job.get("original_video")
+            selected_audio_idx = job.get("selected_audio_stream", 0)
+            probe_result = job.get("probe_result")
+            if not probe_result:
+                try:
+                    probe_result = probe_container(media_path)
+                except Exception:
+                    probe_result = {}
             
             if job.get("duration", 0.0) == 0.0:
                 try:
-                    duration = get_duration(video_path)
+                    duration = get_duration(media_path)
                     if duration > 0.0:
                         self.queue_manager.update_job(job_id, {"duration": duration})
                         job["duration"] = duration
                 except Exception as e:
-                    logger.warning(f"Could not determine video duration: {e}")
+                    logger.warning(f"Could not determine media duration: {e}")
             
             self._update_status(job_id, "EXTRACTING")
             self._log(job_id, "Extracting lossless FLAC...")
             
             flac_path = os.path.join(temp_dir, "audio.flac")
-            extract_audio(video_path, flac_path)
+            extract_audio(media_path, flac_path, stream_index=selected_audio_idx)
             orig_duration = job.get("duration", 0.0)
             
             self.queue_manager.update_job(job_id, {"flac_audio": flac_path})
@@ -177,7 +184,7 @@ class LocalJobProcessor(QThread):
                 raise RuntimeError(f"Expected vocal track not found in output directory.\nFiles present: {files_found}\nProcess logs:\n{full_output.strip()}")
                 
             self._update_status(job_id, "REMUXING")
-            self._log(job_id, "Padding/Trimming audio and Remuxing video...")
+            self._log(job_id, "Padding/Trimming audio and Remuxing media...")
             
             padded_wav = os.path.join(temp_dir, "clean_padded.wav")
             pad_or_trim_audio(clean_wav, orig_duration, padded_wav)
@@ -190,11 +197,11 @@ class LocalJobProcessor(QThread):
             except Exception:
                 pass
                 
-            base_name = os.path.splitext(os.path.basename(video_path))[0]
-            out_video = os.path.join(output_folder, f"{base_name}_purified.mp4")
+            base_name, ext = os.path.splitext(os.path.basename(media_path))
+            out_media = os.path.join(output_folder, f"{base_name}_purified{ext}")
             
-            remux_video(video_path, padded_wav, out_video)
-            self.queue_manager.update_job(job_id, {"output_video": out_video})
+            remux_media(media_path, padded_wav, out_media, probe_result, chosen_stream_idx=selected_audio_idx)
+            self.queue_manager.update_job(job_id, {"output_media": out_media, "output_video": out_media})
             
             self._update_status(job_id, "COMPLETED")
             self._log(job_id, "Job finished successfully!")

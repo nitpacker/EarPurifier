@@ -32,7 +32,7 @@ try:
     from queue_manager import QueueManager
     from processor_thread import JobProcessor
     from local_processor import LocalJobProcessor
-    from media_engine import get_duration
+    from media_engine import get_duration, probe_container
     from dependency_manager import DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader
     from logger_setup import setup_logger
 except ImportError:
@@ -40,7 +40,7 @@ except ImportError:
     from src.queue_manager import QueueManager
     from src.processor_thread import JobProcessor
     from src.local_processor import LocalJobProcessor
-    from src.media_engine import get_duration
+    from src.media_engine import get_duration, probe_container
     from src.dependency_manager import DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader
     from src.logger_setup import setup_logger
 
@@ -72,6 +72,13 @@ ACCENT_CYAN = "#06b6d4"      # Acoustic soundwave cyan
 ACCENT_BLUE = "#0284c7"      # In Progress blue
 ACCENT_AMBER = "#f59e0b"     # Warning amber
 ACCENT_RED = "#ef4444"       # Destructive red
+
+# ─── Supported Media Extensions ──────────────────────────────────────────────
+SUPPORTED_EXTENSIONS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+    ".weba", ".m4a", ".m4b", ".mka",
+    ".mp3", ".wav", ".flac", ".aac", ".ogg", ".opus",
+}
 
 # ─── Asset Helper ─────────────────────────────────────────────────────────────
 def get_asset_path(filename: str) -> str:
@@ -525,11 +532,11 @@ class DeleteConfirmDialog(QDialog):
         layout.addSpacing(4)
 
         self.chk_delete_files = QCheckBox("Delete local output file(s) too")
-        self.chk_delete_files.setToolTip("Will only delete generated/purified video files, never original inputs.")
+        self.chk_delete_files.setToolTip("Will only delete generated/purified output files, never original inputs.")
         self.chk_delete_files.setChecked(self.config.get("delete_output_files", False))
         layout.addWidget(self.chk_delete_files)
 
-        lbl_note = QLabel("Note: Original input video files will never be touched.")
+        lbl_note = QLabel("Note: Original input files will never be touched.")
         lbl_note.setStyleSheet(f"color: {TEXT_FAINT}; font-size: 11px; background: transparent; border: none;")
         layout.addWidget(lbl_note)
 
@@ -587,6 +594,143 @@ class DeleteConfirmDialog(QDialog):
         return self.chk_delete_files.isChecked()
 
 
+# ─── Audio Track Selection Dialog ─────────────────────────────────────────────
+class AudioTrackSelectDialog(QDialog):
+    """
+    Clean, styled PySide6 dialog for selecting an audio track from a multi-audio container.
+    """
+    def __init__(self, audio_streams: list, file_name: str, parent=None):
+        super().__init__(parent)
+        self.audio_streams = audio_streams
+        self.chosen_index = 0
+        self.setWindowTitle("Select Audio Track - EarPurifier")
+        self.setMinimumWidth(500)
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: #ffffff;
+                border-radius: 12px;
+            }}
+            QLabel {{
+                color: {TEXT_HEAD};
+                background: transparent;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(24, 22, 24, 20)
+
+        # Header Title
+        lbl_title = QLabel("🎵  Multiple Audio Tracks Detected")
+        lbl_title.setStyleSheet(f"font-size: 16px; font-weight: 800; color: {TEXT_HEAD};")
+        layout.addWidget(lbl_title)
+
+        lbl_file = QLabel(f"File: {file_name}")
+        lbl_file.setStyleSheet(f"font-size: 12px; color: {TEXT_MUTED}; font-weight: 500;")
+        lbl_file.setWordWrap(True)
+        layout.addWidget(lbl_file)
+
+        lbl_desc = QLabel("Select which audio track to isolate and purify:")
+        lbl_desc.setStyleSheet(f"font-size: 13px; color: {TEXT_BODY}; font-weight: 600;")
+        layout.addWidget(lbl_desc)
+
+        # Track list widget
+        self.track_list = QListWidget()
+        self.track_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: #f7faf8;
+                border: 1px solid {CARD_BORDER};
+                border-radius: 8px;
+                outline: 0px;
+                padding: 6px;
+            }}
+            QListWidget::item {{
+                padding: 10px 12px;
+                border-radius: 6px;
+                font-size: 12.5px;
+                color: {TEXT_HEAD};
+            }}
+            QListWidget::item:selected {{
+                background-color: rgba(16, 185, 129, 0.16);
+                color: {TEXT_HEAD};
+                font-weight: 700;
+            }}
+            QListWidget::item:hover {{
+                background-color: rgba(16, 185, 129, 0.08);
+            }}
+        """)
+        self.track_list.setSelectionMode(QListWidget.SingleSelection)
+
+        for i, stream in enumerate(audio_streams):
+            lang = stream.get("tags", {}).get("language", "") or "und"
+            title = stream.get("tags", {}).get("title", "") or ""
+            codec = stream.get("codec_name", "unknown")
+            channels = stream.get("channels", 0)
+
+            title_part = f" ({title})" if title else ""
+            item_text = f"Track {i + 1}: {lang.upper()}{title_part} - {codec}, {channels} channels"
+            item = QListWidgetItem(item_text)
+            self.track_list.addItem(item)
+
+        self.track_list.setCurrentRow(0)
+        layout.addWidget(self.track_list)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setCursor(Qt.PointingHandCursor)
+        btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #edf5f0;
+                color: {TEXT_BODY};
+                border: 1px solid {CARD_BORDER};
+                padding: 8px 18px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                border-color: {CARD_BORDER_HOVER};
+                color: {TEXT_HEAD};
+            }}
+        """)
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        btn_select = QPushButton("Select Track")
+        btn_select.setCursor(Qt.PointingHandCursor)
+        btn_select.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {ACCENT_EMERALD}, stop:1 {ACCENT_TEAL});
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 8px 22px;
+                border: none;
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {ACCENT_MINT}, stop:1 #0f766e);
+            }}
+        """)
+        btn_select.clicked.connect(self._on_select)
+        btn_layout.addWidget(btn_select)
+
+        layout.addLayout(btn_layout)
+
+    def _on_select(self):
+        row = self.track_list.currentRow()
+        self.chosen_index = row if row >= 0 else 0
+        self.accept()
+
+    def get_chosen_index(self) -> int:
+        return self.chosen_index
+
+
 # ─── Job Row Widget (Calm & Polished SaaS Row) ────────────────────────────────
 class JobWidget(QWidget):
     delete_requested = Signal(str)
@@ -597,7 +741,7 @@ class JobWidget(QWidget):
         super().__init__(parent)
         self.job_id = job_id
         self.job_dict = job_dict
-        self.video_path = job_dict.get("original_video", "")
+        self.video_path = job_dict.get("original_media") or job_dict.get("original_video", "")
         self.duration = job_dict.get("duration", 0.0)
         self.mode = mode
         self.current_status = "PENDING"
@@ -977,7 +1121,8 @@ class StatusGroupHeader(QWidget):
 
 # ─── Job Queue Section (Reusable Engine Canvas) ───────────────────────────────
 class JobQueueSection(QWidget):
-    add_video_clicked = Signal()
+    add_media_clicked = Signal()
+    add_video_clicked = add_media_clicked
     download_model_clicked = Signal(str, str)
 
     def __init__(self, mode: str, queue_manager: QueueManager, config: ConfigManager, parent=None):
@@ -1026,8 +1171,8 @@ class JobQueueSection(QWidget):
 
         header_bar.addStretch()
 
-        # Primary Action Button: '+ Add Video' (Sprout-Teal Gradient)
-        self.btn_add = QPushButton("＋ Add Video")
+        # Primary Action Button: '+ Add Media' (Sprout-Teal Gradient)
+        self.btn_add = QPushButton("＋ Add Media")
         self.btn_add.setCursor(Qt.PointingHandCursor)
         self.btn_add.setStyleSheet(f"""
             QPushButton {{
@@ -1359,7 +1504,7 @@ class JobQueueSection(QWidget):
             lbl_empty_title.setAlignment(Qt.AlignCenter)
             empty_layout.addWidget(lbl_empty_title)
 
-            lbl_empty_desc = QLabel("Click '+ Add Video' above to upload video files and isolate vocals with AI.")
+            lbl_empty_desc = QLabel("Click '+ Add Media' above to upload media files and isolate vocals with AI.")
             lbl_empty_desc.setStyleSheet(f"font-size: 12.5px; color: {TEXT_MUTED}; background: transparent;")
             lbl_empty_desc.setAlignment(Qt.AlignCenter)
             empty_layout.addWidget(lbl_empty_desc)
@@ -1505,7 +1650,7 @@ class JobQueueSection(QWidget):
         model_path = os.path.join(models_dir, model_name)
         
         if os.path.exists(model_path):
-            self.btn_add.setText("＋ Add Video")
+            self.btn_add.setText("＋ Add Media")
             self._model_needs_download = False
         else:
             self.btn_add.setText(f"⬇ Download Model ({size_txt})")
@@ -1517,7 +1662,7 @@ class JobQueueSection(QWidget):
             subfolder = "RoFormer" if "roformer" in model_name.lower() else ("MDX23C" if "mdx23c" in model_name.lower() else "Kim_Vocal_2")
             self.download_model_clicked.emit(model_name, subfolder)
         else:
-            self.add_video_clicked.emit()
+            self.add_media_clicked.emit()
 
 
 # ─── Main Window ─────────────────────────────────────────────────────────────
@@ -1614,7 +1759,7 @@ class MainWindow(QMainWindow):
         self.stack.setStyleSheet(f"background-color: {CANVAS_BG};")
 
         self.cloud_section = JobQueueSection("Cloud (Kaggle)", self.queue_manager, self.config)
-        self.cloud_section.add_video_clicked.connect(lambda: self.add_video("Cloud (Kaggle)"))
+        self.cloud_section.add_media_clicked.connect(lambda: self.add_media("Cloud (Kaggle)"))
         self.stack.addWidget(self.cloud_section)
 
         self.tab_local = QWidget()
@@ -1743,7 +1888,7 @@ class MainWindow(QMainWindow):
         grid.setContentsMargins(0, 0, 0, 0)
 
         self.local_section = JobQueueSection("Local (GPU)", self.queue_manager, self.config)
-        self.local_section.add_video_clicked.connect(lambda: self.add_video("Local (GPU)"))
+        self.local_section.add_media_clicked.connect(lambda: self.add_media("Local (GPU)"))
         self.local_section.download_model_clicked.connect(self.download_local_model)
         grid.addWidget(self.local_section, 0, 0)
 
@@ -1891,6 +2036,9 @@ class MainWindow(QMainWindow):
             self.local_thread.start()
 
     def add_video(self, mode: str):
+        self.add_media(mode)
+
+    def add_media(self, mode: str):
         if mode == "Cloud (Kaggle)":
             self.init_threads()
             if not self.config.get("kaggle_username"):
@@ -1907,8 +2055,39 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Permission Denied", f"Could not create output folder. Windows Defender or an antivirus might be blocking access.\n\nError: {e}\n\nPlease change the output folder in Settings to your Desktop.")
             return
 
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Video Files", "", "Video Files (*.mp4 *.mkv *.avi *.mov)")
-        
+        file_filter = (
+            "Supported Media Files (*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.weba *.m4a *.m4b *.mka *.mp3 *.wav *.flac *.aac *.ogg *.opus);;"
+            "Video Files (*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm);;"
+            "Audio Files (*.mp3 *.wav *.flac *.m4a *.m4b *.mka *.weba *.aac *.ogg *.opus);;"
+            "All Files (*.*)"
+        )
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Media Files", "", file_filter)
+        if not files:
+            return
+
+        # Pre-Flight Validation Guard
+        valid_files = []
+        invalid_files = []
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                valid_files.append(f)
+            else:
+                invalid_files.append(os.path.basename(f))
+
+        if invalid_files:
+            supported_list = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            QMessageBox.warning(
+                self,
+                "Unsupported File Format",
+                f"The following file(s) have unsupported extensions and were skipped:\n\n"
+                f"{chr(10).join(invalid_files)}\n\n"
+                f"Supported formats:\n{supported_list}"
+            )
+
+        if not valid_files:
+            return
+
         model_selection = self.config.get("local_model", "")
         if "RoFormer" in model_selection:
             display_model = "RoFormer"
@@ -1916,11 +2095,48 @@ class MainWindow(QMainWindow):
             display_model = "MDX23C"
         else:
             display_model = "Kim Vocal 2"
-            
-        for file in files:
-            # We defer duration extraction to the background thread to prevent UI freezing
+
+        for file in valid_files:
+            # Audio Stream Inspection
+            try:
+                probe_result = probe_container(file)
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "Analysis Error",
+                    f"Could not inspect streams for '{os.path.basename(file)}':\n{e}\n\nSkipping file."
+                )
+                continue
+
+            audio_streams = probe_result.get("audio_streams", [])
+
+            # Zero-Audio Guard: Empty Container Trap
+            if len(audio_streams) == 0:
+                QMessageBox.warning(
+                    self,
+                    "No Audio Streams",
+                    f"The selected file contains no audio streams to purify:\n\n{os.path.basename(file)}"
+                )
+                continue
+
+            # Stream selection logic
+            chosen_index = 0
+            if len(audio_streams) > 1:
+                dlg = AudioTrackSelectDialog(audio_streams, os.path.basename(file), self)
+                if dlg.exec() != QDialog.Accepted:
+                    # User cancelled track selection for this file
+                    continue
+                chosen_index = dlg.get_chosen_index()
+
             duration = 0.0
-            jid = self.queue_manager.add_job(file, mode=mode, duration=duration, model=display_model)
+            self.queue_manager.add_job(
+                file,
+                mode=mode,
+                duration=duration,
+                model=display_model,
+                selected_audio_stream=chosen_index,
+                probe_result=probe_result
+            )
 
         if mode == "Cloud (Kaggle)":
             self.cloud_section.refresh_list()
