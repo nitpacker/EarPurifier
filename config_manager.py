@@ -92,7 +92,8 @@ class ConfigManager:
             "enable_logging": True,
             "local_model": "SOTA (RoFormer) - Requires High-End GPU",
             "processing_mode": "Cloud (Kaggle)", # or "Local (GPU)"
-            "delete_output_files": False
+            "delete_output_files": False,
+            "language": "ar"
         }
         self.config = self.load_config()
 

@@ -41,10 +41,11 @@ def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
     
     if QApplication.instance():
         try:
+            from i18n import t
             QMessageBox.critical(
                 None,
-                "Unexpected Error - EarPurifier",
-                f"An unexpected error occurred:\n\n{exc_value}\n\nPlease check the application log for details."
+                t("unexpected_error_title"),
+                t("unexpected_error_msg", exc=str(exc_value))
             )
         except Exception:
             pass

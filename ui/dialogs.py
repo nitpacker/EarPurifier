@@ -2,14 +2,15 @@ import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QComboBox, QCheckBox, QGroupBox, QFormLayout,
-    QFileDialog, QListWidget, QListWidgetItem
+    QFileDialog, QListWidget, QListWidgetItem, QApplication
 )
 from PySide6.QtCore import Qt
 
 from .theme import (
     TEXT_HEAD, TEXT_BODY, TEXT_MUTED, TEXT_FAINT,
     CARD_BORDER, CARD_BORDER_HOVER,
-    ACCENT_EMERALD, ACCENT_MINT, ACCENT_TEAL, ACCENT_RED
+    ACCENT_EMERALD, ACCENT_MINT, ACCENT_TEAL, ACCENT_RED,
+    get_combobox_qss, get_groupbox_qss
 )
 from .components import VectorAlertBadge
 
@@ -18,6 +19,11 @@ try:
 except ImportError:
     from src.config_manager import ConfigManager
 
+try:
+    from i18n import t, is_rtl, format_delete_confirm_msg
+except ImportError:
+    from src.i18n import t, is_rtl, format_delete_confirm_msg
+
 
 # ─── Settings Dialog ─────────────────────────────────────────────────────────
 
@@ -25,28 +31,23 @@ class SettingsDialog(QDialog):
     def __init__(self, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle("Settings - EarPurifier")
+        self.setWindowTitle(t("settings_window_title"))
         self.setMinimumWidth(520)
+
+        current_lang = self.config.get("language", "ar")
+        rtl_mode = is_rtl(current_lang)
+
+        # Set direction of the dialog explicitly
+        self.setLayoutDirection(Qt.RightToLeft if rtl_mode else Qt.LeftToRight)
+        self.apply_dialog_style(rtl_mode)
+        self.init_ui(current_lang)
+
+    def apply_dialog_style(self, rtl_mode: bool):
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: #ffffff;
             }}
-            QGroupBox {{
-                font-weight: 700;
-                font-size: 13px;
-                color: {TEXT_HEAD};
-                border: 1px solid {CARD_BORDER};
-                border-radius: 8px;
-                margin-top: 14px;
-                padding-top: 18px;
-                background-color: #ffffff;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 14px;
-                padding: 0 6px;
-                color: {TEXT_HEAD};
-            }}
+            {get_groupbox_qss(rtl_mode)}
             QLabel {{
                 color: {TEXT_BODY};
                 font-size: 12px;
@@ -64,17 +65,6 @@ class SettingsDialog(QDialog):
             QLineEdit:focus {{
                 border-color: {ACCENT_EMERALD};
                 background-color: #ffffff;
-            }}
-            QComboBox {{
-                background-color: #f7faf8;
-                border: 1px solid {CARD_BORDER};
-                border-radius: 6px;
-                padding: 8px 12px;
-                color: {TEXT_HEAD};
-                font-size: 12px;
-            }}
-            QComboBox:focus {{
-                border-color: {ACCENT_EMERALD};
             }}
             QCheckBox {{
                 color: {TEXT_HEAD};
@@ -95,44 +85,61 @@ class SettingsDialog(QDialog):
                 border-color: {ACCENT_EMERALD};
             }}
         """)
-        self.init_ui()
 
-    def init_ui(self):
+    def init_ui(self, current_lang: str):
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
         layout.setContentsMargins(24, 22, 24, 22)
 
         title_box = QHBoxLayout()
-        lbl_title = QLabel("⚙  Application Settings")
-        lbl_title.setStyleSheet(f"font-size: 18px; font-weight: 800; color: {TEXT_HEAD}; background: transparent;")
-        title_box.addWidget(lbl_title)
+        self.lbl_title = QLabel(t("settings_header"))
+        self.lbl_title.setStyleSheet(f"font-size: 18px; font-weight: 800; color: {TEXT_HEAD}; background: transparent;")
+        title_box.addWidget(self.lbl_title)
         layout.addLayout(title_box)
 
-        grp_kaggle = QGroupBox("Kaggle Cloud Credentials")
-        form_kaggle = QFormLayout()
-        form_kaggle.setSpacing(10)
-        form_kaggle.setContentsMargins(14, 16, 14, 14)
+        # ── Kaggle Credentials Group ──
+        self.grp_kaggle = QGroupBox(t("settings_grp_kaggle"))
+        self.form_kaggle = QFormLayout()
+        self.form_kaggle.setSpacing(10)
+        self.form_kaggle.setContentsMargins(14, 16, 14, 14)
+
         self.inp_user = QLineEdit(self.config.get("kaggle_username"))
-        self.inp_user.setPlaceholderText("your_kaggle_username")
+        self.inp_user.setPlaceholderText(t("settings_kaggle_user_ph"))
         self.inp_key = QLineEdit(self.config.get("kaggle_api_key"))
         self.inp_key.setEchoMode(QLineEdit.Password)
         self.inp_key.setPlaceholderText("••••••••••••••••")
-        form_kaggle.addRow("Kaggle Username:", self.inp_user)
-        form_kaggle.addRow("Kaggle API Key:", self.inp_key)
-        grp_kaggle.setLayout(form_kaggle)
 
-        grp_general = QGroupBox("General & Engine Settings")
-        form_general = QFormLayout()
-        form_general.setSpacing(10)
-        form_general.setContentsMargins(14, 16, 14, 14)
+        self.lbl_user = QLabel(t("settings_kaggle_user"))
+        self.lbl_key = QLabel(t("settings_kaggle_key"))
+        self.form_kaggle.addRow(self.lbl_user, self.inp_user)
+        self.form_kaggle.addRow(self.lbl_key, self.inp_key)
+        self.grp_kaggle.setLayout(self.form_kaggle)
 
+        # ── General & Engine Group ──
+        self.grp_general = QGroupBox(t("settings_grp_general"))
+        self.form_general = QFormLayout()
+        self.form_general.setSpacing(10)
+        self.form_general.setContentsMargins(14, 16, 14, 14)
+
+        # Language Selector
+        self.cmb_lang = QComboBox()
+        self.cmb_lang.addItem("العربية", "ar")
+        self.cmb_lang.addItem("English", "en")
+        idx = 0 if current_lang == "ar" else 1
+        self.cmb_lang.setCurrentIndex(idx)
+        self.cmb_lang.setStyleSheet(get_combobox_qss(is_rtl(current_lang)))
+
+        self.lbl_lang = QLabel(t("settings_language"))
+        self.form_general.addRow(self.lbl_lang, self.cmb_lang)
+
+        # Output Folder
         out_layout = QHBoxLayout()
         out_layout.setSpacing(8)
         self.inp_out = QLineEdit(self.config.get("output_folder"))
-        self.inp_out.setPlaceholderText("Select folder...")
-        btn_browse = QPushButton("Browse")
-        btn_browse.setCursor(Qt.PointingHandCursor)
-        btn_browse.setStyleSheet(f"""
+        self.inp_out.setPlaceholderText(t("settings_out_folder_ph"))
+        self.btn_browse = QPushButton(t("settings_btn_browse"))
+        self.btn_browse.setCursor(Qt.PointingHandCursor)
+        self.btn_browse.setStyleSheet(f"""
             QPushButton {{
                 background-color: #edf5f0;
                 color: {TEXT_BODY};
@@ -147,11 +154,13 @@ class SettingsDialog(QDialog):
                 color: {ACCENT_EMERALD};
             }}
         """)
-        btn_browse.clicked.connect(self.browse_output)
+        self.btn_browse.clicked.connect(self.browse_output)
         out_layout.addWidget(self.inp_out)
-        out_layout.addWidget(btn_browse)
-        form_general.addRow("Output Folder:", out_layout)
+        out_layout.addWidget(self.btn_browse)
+        self.lbl_out = QLabel(t("settings_out_folder"))
+        self.form_general.addRow(self.lbl_out, out_layout)
 
+        # Local AI Model (Model names strictly preserved in English)
         self.cmb_model = QComboBox()
         self.cmb_model.addItems([
             "SOTA (RoFormer) - Requires High-End GPU",
@@ -159,16 +168,19 @@ class SettingsDialog(QDialog):
             "Low (MDXNET) - Fast & Low VRAM"
         ])
         self.cmb_model.setCurrentText(self.config.get("local_model"))
-        form_general.addRow("Local AI Model:", self.cmb_model)
+        self.cmb_model.setStyleSheet(get_combobox_qss(is_rtl(current_lang)))
+        self.lbl_model = QLabel(t("settings_local_model"))
+        self.form_general.addRow(self.lbl_model, self.cmb_model)
 
-        self.chk_logging = QCheckBox("Enable Background Logging (Recommended)")
+        self.chk_logging = QCheckBox(t("settings_enable_logging"))
         self.chk_logging.setChecked(self.config.get("enable_logging", True))
-        form_general.addRow("", self.chk_logging)
-        grp_general.setLayout(form_general)
+        self.form_general.addRow("", self.chk_logging)
+        self.grp_general.setLayout(self.form_general)
 
-        btn_save = QPushButton("Save Settings")
-        btn_save.setCursor(Qt.PointingHandCursor)
-        btn_save.setStyleSheet(f"""
+        # Save Button
+        self.btn_save = QPushButton(t("settings_btn_save"))
+        self.btn_save.setCursor(Qt.PointingHandCursor)
+        self.btn_save.setStyleSheet(f"""
             QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 {ACCENT_EMERALD}, stop:1 {ACCENT_TEAL});
@@ -184,15 +196,15 @@ class SettingsDialog(QDialog):
                     stop:0 {ACCENT_MINT}, stop:1 #0f766e);
             }}
         """)
-        btn_save.clicked.connect(self.accept)
+        self.btn_save.clicked.connect(self.accept)
 
-        layout.addWidget(grp_kaggle)
-        layout.addWidget(grp_general)
+        layout.addWidget(self.grp_kaggle)
+        layout.addWidget(self.grp_general)
         layout.addSpacing(6)
-        layout.addWidget(btn_save)
+        layout.addWidget(self.btn_save)
 
     def browse_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
+        folder = QFileDialog.getExistingDirectory(self, t("settings_browse_title"))
         if folder:
             self.inp_out.setText(folder)
 
@@ -202,6 +214,7 @@ class SettingsDialog(QDialog):
         self.config.set("output_folder", self.inp_out.text().strip())
         self.config.set("local_model", self.cmb_model.currentText())
         self.config.set("enable_logging", self.chk_logging.isChecked())
+        self.config.set("language", self.cmb_lang.currentData())
         return True
 
 
@@ -211,7 +224,7 @@ class DeleteConfirmDialog(QDialog):
     def __init__(self, count: int, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle("Confirm Removal")
+        self.setWindowTitle(t("delete_dialog_title"))
         self.setMinimumWidth(430)
         self.setStyleSheet(f"""
             QDialog {{
@@ -255,12 +268,12 @@ class DeleteConfirmDialog(QDialog):
 
         msg_box = QVBoxLayout()
         msg_box.setSpacing(3)
-        msg = f"Remove {count} job(s) from history?" if count > 1 else "Remove this job from history?"
+        msg = format_delete_confirm_msg(count)
         lbl_msg = QLabel(msg)
         lbl_msg.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {TEXT_HEAD}; background: transparent; border: none;")
         msg_box.addWidget(lbl_msg)
 
-        lbl_desc = QLabel("This will remove the selected entry from your session history.")
+        lbl_desc = QLabel(t("delete_confirm_desc"))
         lbl_desc.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; background: transparent; border: none;")
         msg_box.addWidget(lbl_desc)
         top_row.addLayout(msg_box)
@@ -269,12 +282,12 @@ class DeleteConfirmDialog(QDialog):
 
         layout.addSpacing(4)
 
-        self.chk_delete_files = QCheckBox("Delete local output file(s) too")
-        self.chk_delete_files.setToolTip("Will only delete generated/purified output files, never original inputs.")
+        self.chk_delete_files = QCheckBox(t("delete_output_files_chk"))
+        self.chk_delete_files.setToolTip(t("delete_output_files_tip"))
         self.chk_delete_files.setChecked(self.config.get("delete_output_files", False))
         layout.addWidget(self.chk_delete_files)
 
-        lbl_note = QLabel("Note: Original input files will never be touched.")
+        lbl_note = QLabel(t("delete_output_files_note"))
         lbl_note.setStyleSheet(f"color: {TEXT_FAINT}; font-size: 11px; background: transparent; border: none;")
         layout.addWidget(lbl_note)
 
@@ -283,7 +296,7 @@ class DeleteConfirmDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        btn_cancel = QPushButton("Cancel")
+        btn_cancel = QPushButton(t("btn_cancel"))
         btn_cancel.setCursor(Qt.PointingHandCursor)
         btn_cancel.setStyleSheet(f"""
             QPushButton {{
@@ -302,7 +315,7 @@ class DeleteConfirmDialog(QDialog):
         """)
         btn_cancel.clicked.connect(self.reject)
 
-        btn_delete = QPushButton("Remove")
+        btn_delete = QPushButton(t("btn_remove"))
         btn_delete.setCursor(Qt.PointingHandCursor)
         btn_delete.setStyleSheet(f"""
             QPushButton {{
@@ -342,7 +355,7 @@ class AudioTrackSelectDialog(QDialog):
         super().__init__(parent)
         self.audio_streams = audio_streams
         self.chosen_index = 0
-        self.setWindowTitle("Select Audio Track - EarPurifier")
+        self.setWindowTitle(t("track_dialog_title"))
         self.setMinimumWidth(500)
         self.setStyleSheet(f"""
             QDialog {{
@@ -360,16 +373,16 @@ class AudioTrackSelectDialog(QDialog):
         layout.setContentsMargins(24, 22, 24, 20)
 
         # Header Title
-        lbl_title = QLabel("🎵  Multiple Audio Tracks Detected")
+        lbl_title = QLabel(t("track_dialog_header"))
         lbl_title.setStyleSheet(f"font-size: 16px; font-weight: 800; color: {TEXT_HEAD};")
         layout.addWidget(lbl_title)
 
-        lbl_file = QLabel(f"File: {file_name}")
+        lbl_file = QLabel(t("track_dialog_file", file_name=file_name))
         lbl_file.setStyleSheet(f"font-size: 12px; color: {TEXT_MUTED}; font-weight: 500;")
         lbl_file.setWordWrap(True)
         layout.addWidget(lbl_file)
 
-        lbl_desc = QLabel("Select which audio track to isolate and purify:")
+        lbl_desc = QLabel(t("track_dialog_desc"))
         lbl_desc.setStyleSheet(f"font-size: 13px; color: {TEXT_BODY}; font-weight: 600;")
         layout.addWidget(lbl_desc)
 
@@ -407,7 +420,14 @@ class AudioTrackSelectDialog(QDialog):
             channels = stream.get("channels", 0)
 
             title_part = f" ({title})" if title else ""
-            item_text = f"Track {i + 1}: {lang.upper()}{title_part} - {codec}, {channels} channels"
+            item_text = t(
+                "track_item_format",
+                num=i + 1,
+                lang=lang.upper(),
+                title=title_part,
+                codec=codec,
+                channels=channels
+            )
             item = QListWidgetItem(item_text)
             self.track_list.addItem(item)
 
@@ -418,7 +438,7 @@ class AudioTrackSelectDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        btn_cancel = QPushButton("Cancel")
+        btn_cancel = QPushButton(t("btn_cancel"))
         btn_cancel.setCursor(Qt.PointingHandCursor)
         btn_cancel.setStyleSheet(f"""
             QPushButton {{
@@ -438,7 +458,7 @@ class AudioTrackSelectDialog(QDialog):
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
 
-        btn_select = QPushButton("Select Track")
+        btn_select = QPushButton(t("btn_select_track"))
         btn_select.setCursor(Qt.PointingHandCursor)
         btn_select.setStyleSheet(f"""
             QPushButton {{

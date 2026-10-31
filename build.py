@@ -57,6 +57,7 @@ def main():
         "--hidden-import", "loguru",
         "--hidden-import", "PySide6",
         "--hidden-import", "ui",
+        "--hidden-import", "i18n",
         "--hidden-import", "text_unidecode",
         main_script
     ]

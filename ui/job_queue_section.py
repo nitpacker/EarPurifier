@@ -23,6 +23,11 @@ except ImportError:
     from src.queue_manager import QueueManager
     from src.config_manager import ConfigManager
 
+try:
+    from i18n import t, is_rtl, format_jobs_count
+except ImportError:
+    from src.i18n import t, is_rtl, format_jobs_count
+
 
 # ─── Job Queue Section (Reusable Engine Canvas) ───────────────────────────────
 
@@ -38,10 +43,18 @@ class JobQueueSection(QWidget):
         self.config = config
         self.selection_mode = False
         self.job_widgets: dict[str, JobWidget] = {}
+        self._model_needs_download = False
+        self._model_size_txt = "~250 MB"
 
         self.init_ui()
         self.refresh_list()
         self.update_model_button_state()
+
+    def _get_engine_title(self) -> str:
+        return t("cloud_engine_title") if "Cloud" in self.mode else t("local_engine_title")
+
+    def _get_engine_subtitle(self) -> str:
+        return t("cloud_engine_sub") if "Cloud" in self.mode else t("local_engine_sub_default")
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -55,22 +68,19 @@ class JobQueueSection(QWidget):
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
 
-        engine_name = "Cloud Engine (Kaggle T4)" if "Cloud" in self.mode else "Local Engine (Hardware GPU)"
-        subtitle_text = "Free Cloud GPUs · 30-Second Dataset Sync" if "Cloud" in self.mode else "High-Speed Local Inference · RoFormer AI"
-
         bread_row = QHBoxLayout()
         bread_row.setSpacing(6)
         bread_dot = QLabel("●")
         bread_dot.setStyleSheet(f"color: {ACCENT_EMERALD}; font-size: 13px; background: transparent;")
         bread_row.addWidget(bread_dot)
 
-        lbl_engine = QLabel(engine_name)
-        lbl_engine.setStyleSheet(f"font-size: 18px; font-weight: 800; color: {TEXT_HEAD}; background: transparent;")
-        bread_row.addWidget(lbl_engine)
+        self.lbl_engine = QLabel(self._get_engine_title())
+        self.lbl_engine.setStyleSheet(f"font-size: 18px; font-weight: 800; color: {TEXT_HEAD}; background: transparent;")
+        bread_row.addWidget(self.lbl_engine)
         bread_row.addStretch()
         title_box.addLayout(bread_row)
 
-        self.lbl_sub = QLabel(subtitle_text)
+        self.lbl_sub = QLabel(self._get_engine_subtitle())
         self.lbl_sub.setStyleSheet(f"font-size: 12px; color: {TEXT_MUTED}; font-weight: 500; background: transparent;")
         title_box.addWidget(self.lbl_sub)
         header_bar.addLayout(title_box)
@@ -78,14 +88,14 @@ class JobQueueSection(QWidget):
         header_bar.addStretch()
 
         # Primary Action Button: '+ Add Media' (Sprout-Teal Gradient)
-        self.btn_add = QPushButton("＋ Add Media")
+        self.btn_add = QPushButton(t("btn_add_media"))
         self.btn_add.setCursor(Qt.PointingHandCursor)
         self.btn_add.setStyleSheet(get_primary_button_qss())
         self.btn_add.clicked.connect(self._on_add_clicked)
         header_bar.addWidget(self.btn_add)
 
         # Select to Delete (Ghost Button)
-        self.btn_select_mode = QPushButton("Select to Delete")
+        self.btn_select_mode = QPushButton(t("btn_select_mode"))
         self.btn_select_mode.setCursor(Qt.PointingHandCursor)
         self.btn_select_mode.setStyleSheet(f"""
             QPushButton {{
@@ -107,7 +117,7 @@ class JobQueueSection(QWidget):
         header_bar.addWidget(self.btn_select_mode)
 
         # Clear History (Ghost Red Button)
-        self.btn_clear_history = QPushButton("Clear History")
+        self.btn_clear_history = QPushButton(t("btn_clear_history"))
         self.btn_clear_history.setCursor(Qt.PointingHandCursor)
         self.btn_clear_history.setStyleSheet(f"""
             QPushButton {{
@@ -133,21 +143,25 @@ class JobQueueSection(QWidget):
         views_bar = QHBoxLayout()
         views_bar.setSpacing(8)
 
-        lbl_view = QLabel("Filter:")
-        lbl_view.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; font-weight: 700; background: transparent;")
-        views_bar.addWidget(lbl_view)
+        self.lbl_view = QLabel(t("filter_label"))
+        self.lbl_view.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; font-weight: 700; background: transparent;")
+        views_bar.addWidget(self.lbl_view)
 
         self.cmb_filter = QComboBox()
-        self.cmb_filter.addItems(["All Jobs", "In Progress", "Completed"])
-        self.cmb_filter.setStyleSheet(get_combobox_qss())
+        self.cmb_filter.addItems([
+            t("filter_all_jobs", count=0),
+            t("filter_in_progress", count=0),
+            t("filter_completed", count=0)
+        ])
+        self.cmb_filter.setStyleSheet(get_combobox_qss(is_rtl()))
         self.cmb_filter.currentIndexChanged.connect(self.refresh_list)
         views_bar.addWidget(self.cmb_filter)
 
         views_bar.addStretch()
         
-        btn_mariam = QPushButton("🌱 From Mariam Initiative")
-        btn_mariam.setCursor(Qt.PointingHandCursor)
-        btn_mariam.setStyleSheet("""
+        self.btn_mariam = QPushButton(t("mariam_initiative"))
+        self.btn_mariam.setCursor(Qt.PointingHandCursor)
+        self.btn_mariam.setStyleSheet("""
             QPushButton {
                 background: transparent;
                 color: #10b981;
@@ -161,8 +175,8 @@ class JobQueueSection(QWidget):
                 text-decoration: underline;
             }
         """)
-        btn_mariam.clicked.connect(lambda: webbrowser.open('https://t.me/MariamInitiative'))
-        views_bar.addWidget(btn_mariam)
+        self.btn_mariam.clicked.connect(lambda: webbrowser.open('https://t.me/MariamInitiative'))
+        views_bar.addWidget(self.btn_mariam)
 
         main_layout.addLayout(views_bar)
 
@@ -179,15 +193,15 @@ class JobQueueSection(QWidget):
         batch_layout.setContentsMargins(14, 8, 14, 8)
         batch_layout.setSpacing(10)
 
-        self.lbl_selected_count = QLabel("0 jobs selected")
+        self.lbl_selected_count = QLabel(format_jobs_count(0))
         self.lbl_selected_count.setStyleSheet(f"color: {ACCENT_EMERALD}; font-weight: 800; font-size: 12px; background: transparent;")
         batch_layout.addWidget(self.lbl_selected_count)
 
         batch_layout.addStretch()
 
-        btn_select_all = QPushButton("Select All")
-        btn_select_all.setCursor(Qt.PointingHandCursor)
-        btn_select_all.setStyleSheet(f"""
+        self.btn_select_all = QPushButton(t("btn_select_all"))
+        self.btn_select_all.setCursor(Qt.PointingHandCursor)
+        self.btn_select_all.setStyleSheet(f"""
             QPushButton {{
                 background-color: #ffffff;
                 border: 1px solid {CARD_BORDER};
@@ -202,12 +216,12 @@ class JobQueueSection(QWidget):
                 color: {ACCENT_EMERALD};
             }}
         """)
-        btn_select_all.clicked.connect(self.on_select_all)
-        batch_layout.addWidget(btn_select_all)
+        self.btn_select_all.clicked.connect(self.on_select_all)
+        batch_layout.addWidget(self.btn_select_all)
 
-        btn_cancel_select = QPushButton("Cancel")
-        btn_cancel_select.setCursor(Qt.PointingHandCursor)
-        btn_cancel_select.setStyleSheet(f"""
+        self.btn_cancel_select = QPushButton(t("btn_cancel"))
+        self.btn_cancel_select.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel_select.setStyleSheet(f"""
             QPushButton {{
                 background-color: #ffffff;
                 border: 1px solid {CARD_BORDER};
@@ -221,12 +235,12 @@ class JobQueueSection(QWidget):
                 border-color: {CARD_BORDER_HOVER};
             }}
         """)
-        btn_cancel_select.clicked.connect(self.toggle_selection_mode)
-        batch_layout.addWidget(btn_cancel_select)
+        self.btn_cancel_select.clicked.connect(self.toggle_selection_mode)
+        batch_layout.addWidget(self.btn_cancel_select)
 
-        btn_delete_selected = QPushButton("Remove Selected")
-        btn_delete_selected.setCursor(Qt.PointingHandCursor)
-        btn_delete_selected.setStyleSheet(f"""
+        self.btn_delete_selected = QPushButton(t("btn_remove_selected"))
+        self.btn_delete_selected.setCursor(Qt.PointingHandCursor)
+        self.btn_delete_selected.setStyleSheet(f"""
             QPushButton {{
                 background-color: {ACCENT_RED};
                 color: #ffffff;
@@ -240,6 +254,7 @@ class JobQueueSection(QWidget):
                 background-color: #dc2626;
             }}
         """)
+        btn_delete_selected = self.btn_delete_selected
         btn_delete_selected.clicked.connect(self.on_delete_selected)
         batch_layout.addWidget(btn_delete_selected)
 
@@ -295,7 +310,7 @@ class JobQueueSection(QWidget):
                 completed_jobs.append((jid, job))
 
         if active_jobs:
-            hdr_active = StatusGroupHeader("In Progress", len(active_jobs), ACCENT_BLUE)
+            hdr_active = StatusGroupHeader(t("group_in_progress"), len(active_jobs), ACCENT_BLUE)
             item_hdr = QListWidgetItem()
             item_hdr.setSizeHint(hdr_active.sizeHint())
             item_hdr.setFlags(Qt.NoItemFlags)
@@ -306,7 +321,7 @@ class JobQueueSection(QWidget):
                 self.add_job_widget(jid, job)
 
         if completed_jobs:
-            hdr_comp = StatusGroupHeader("Completed", len(completed_jobs), ACCENT_EMERALD)
+            hdr_comp = StatusGroupHeader(t("group_completed"), len(completed_jobs), ACCENT_EMERALD)
             item_hdr = QListWidgetItem()
             item_hdr.setSizeHint(hdr_comp.sizeHint())
             item_hdr.setFlags(Qt.NoItemFlags)
@@ -328,12 +343,12 @@ class JobQueueSection(QWidget):
             lbl_empty_icon.setAlignment(Qt.AlignCenter)
             empty_layout.addWidget(lbl_empty_icon)
 
-            lbl_empty_title = QLabel("No tasks in this queue")
+            lbl_empty_title = QLabel(t("empty_queue_title"))
             lbl_empty_title.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {TEXT_HEAD}; background: transparent;")
             lbl_empty_title.setAlignment(Qt.AlignCenter)
             empty_layout.addWidget(lbl_empty_title)
 
-            lbl_empty_desc = QLabel("Click '+ Add Media' above to upload media files and isolate vocals with AI.")
+            lbl_empty_desc = QLabel(t("empty_queue_desc"))
             lbl_empty_desc.setStyleSheet(f"font-size: 12.5px; color: {TEXT_MUTED}; background: transparent;")
             lbl_empty_desc.setAlignment(Qt.AlignCenter)
             empty_layout.addWidget(lbl_empty_desc)
@@ -370,16 +385,16 @@ class JobQueueSection(QWidget):
 
         self.cmb_filter.blockSignals(True)
         idx = self.cmb_filter.currentIndex()
-        self.cmb_filter.setItemText(0, f"All Jobs ({len(mode_jobs)})")
-        self.cmb_filter.setItemText(1, f"In Progress ({active_count})")
-        self.cmb_filter.setItemText(2, f"Completed ({completed_count})")
+        self.cmb_filter.setItemText(0, t("filter_all_jobs", count=len(mode_jobs)))
+        self.cmb_filter.setItemText(1, t("filter_in_progress", count=active_count))
+        self.cmb_filter.setItemText(2, t("filter_completed", count=completed_count))
         self.cmb_filter.setCurrentIndex(idx)
         self.cmb_filter.blockSignals(False)
 
     def toggle_selection_mode(self):
         self.selection_mode = not self.selection_mode
         self.batch_bar.setVisible(self.selection_mode)
-        self.btn_select_mode.setText("Exit Selection" if self.selection_mode else "Select to Delete")
+        self.btn_select_mode.setText(t("btn_exit_selection") if self.selection_mode else t("btn_select_mode"))
 
         for widget in self.job_widgets.values():
             widget.set_selection_mode(self.selection_mode)
@@ -388,7 +403,7 @@ class JobQueueSection(QWidget):
 
     def update_selected_count(self):
         count = sum(1 for w in self.job_widgets.values() if w.is_selected())
-        self.lbl_selected_count.setText(f"{count} job(s) selected")
+        self.lbl_selected_count.setText(format_jobs_count(count))
 
     def on_select_all(self):
         for widget in self.job_widgets.values():
@@ -404,7 +419,7 @@ class JobQueueSection(QWidget):
     def on_delete_selected(self):
         selected_ids = [jid for jid, w in self.job_widgets.items() if w.is_selected()]
         if not selected_ids:
-            QMessageBox.information(self, "No Selection", "Please select at least one job to delete.")
+            QMessageBox.information(self, t("alert_no_selection_title"), t("alert_no_selection_msg"))
             return
 
         dlg = DeleteConfirmDialog(len(selected_ids), self.config, self)
@@ -418,7 +433,7 @@ class JobQueueSection(QWidget):
         history_jobs = [jid for jid, j in jobs.items() if j.get("mode", "Cloud (Kaggle)") == self.mode and j.get("status") in ["COMPLETED", "ERROR", "ABORTED"]]
 
         if not history_jobs:
-            QMessageBox.information(self, "History Empty", "No completed, failed, or aborted jobs to clear.")
+            QMessageBox.information(self, t("alert_history_empty_title"), t("alert_history_empty_msg"))
             return
 
         dlg = DeleteConfirmDialog(len(history_jobs), self.config, self)
@@ -430,7 +445,7 @@ class JobQueueSection(QWidget):
         self.queue_manager.abort_job(job_id)
         if job_id in self.job_widgets:
             self.job_widgets[job_id].update_status("ABORTED")
-            self.job_widgets[job_id].update_message("Aborted by user.")
+            self.job_widgets[job_id].update_message(t("msg_aborted_by_user"))
         self.update_counts()
 
     def on_status_updated(self, job_id: str, status: str):
@@ -460,18 +475,19 @@ class JobQueueSection(QWidget):
         model_name = self._get_selected_model_name()
         
         if "roformer" in model_name.lower():
-            display_name = "Maximum Quality · RoFormer AI"
+            display_name = t("local_engine_sub_roformer")
             size_txt = "~250 MB"
             subfolder = "RoFormer"
         elif "mdx23c" in model_name.lower():
-            display_name = "Balanced Performance · MDX23C AI"
+            display_name = t("local_engine_sub_mdx23c")
             size_txt = "~150 MB"
             subfolder = "MDX23C"
         else:
-            display_name = "High-Speed Inference · Kim Vocal 2 AI"
+            display_name = t("local_engine_sub_kim")
             size_txt = "~110 MB"
             subfolder = "Kim_Vocal_2"
             
+        self._model_size_txt = size_txt
         self.lbl_sub.setText(display_name)
         
         # Download into subfolders
@@ -479,10 +495,10 @@ class JobQueueSection(QWidget):
         model_path = os.path.join(models_dir, model_name)
         
         if os.path.exists(model_path):
-            self.btn_add.setText("＋ Add Media")
+            self.btn_add.setText(t("btn_add_media"))
             self._model_needs_download = False
         else:
-            self.btn_add.setText(f"⬇ Download Model ({size_txt})")
+            self.btn_add.setText(t("btn_download_model", size=size_txt))
             self._model_needs_download = True
 
     def _on_add_clicked(self):
@@ -492,3 +508,33 @@ class JobQueueSection(QWidget):
             self.download_model_clicked.emit(model_name, subfolder)
         else:
             self.add_media_clicked.emit()
+
+    def retranslate_ui(self):
+        """Retranslates all text elements and child job cards when language changes."""
+        self.lbl_engine.setText(self._get_engine_title())
+        if "Cloud" in self.mode:
+            self.lbl_sub.setText(self._get_engine_subtitle())
+        else:
+            self.update_model_button_state()
+
+        if "Cloud" in self.mode or not getattr(self, "_model_needs_download", False):
+            self.btn_add.setText(t("btn_add_media"))
+        else:
+            self.btn_add.setText(t("btn_download_model", size=getattr(self, "_model_size_txt", "~250 MB")))
+
+        self.btn_select_mode.setText(t("btn_exit_selection") if self.selection_mode else t("btn_select_mode"))
+        self.btn_clear_history.setText(t("btn_clear_history"))
+        self.btn_mariam.setText(t("mariam_initiative"))
+
+        # Direction-aware combobox styling & label
+        self.lbl_view.setText(t("filter_label"))
+        self.cmb_filter.setStyleSheet(get_combobox_qss(is_rtl()))
+
+        # Batch bar
+        self.btn_select_all.setText(t("btn_select_all"))
+        self.btn_cancel_select.setText(t("btn_cancel"))
+        self.btn_delete_selected.setText(t("btn_remove_selected"))
+        self.update_selected_count()
+
+        # Re-render list to refresh group headers and empty state placeholder
+        self.refresh_list()

@@ -37,7 +37,7 @@ class Theme:
     ACCENT_RED = "#ef4444"       # Destructive red
 
     # Typography Font Family
-    FONT_FAMILY = "'Segoe UI', -apple-system, BlinkMacSystemFont, 'Inter', Roboto, sans-serif"
+    FONT_FAMILY = "'Segoe UI', 'Cairo', 'Tahoma', -apple-system, BlinkMacSystemFont, 'Inter', Roboto, sans-serif"
 
 
 # ─── Dual Token Exports (Module-Level Constants for Ergonomics & Safety) ──────
@@ -113,14 +113,19 @@ def get_scrollbar_qss() -> str:
     """
 
 
-def get_combobox_qss() -> str:
-    """Returns modern non-beveled combobox styling with clean rounded popup."""
+def get_combobox_qss(is_rtl: bool = False) -> str:
+    """Returns modern non-beveled combobox styling with clean rounded popup and direction-aware arrows."""
+    padding_val = "6px 12px 6px 28px" if is_rtl else "6px 28px 6px 12px"
+    subcontrol_pos = "top left" if is_rtl else "top right"
+    arrow_margin = "margin-left: 8px;" if is_rtl else "margin-right: 8px;"
+    item_padding = "padding-right: 8px;" if is_rtl else "padding-left: 8px;"
+
     return f"""
         QComboBox {{
             background-color: #ffffff;
             border: 1px solid {CARD_BORDER};
             border-radius: 7px;
-            padding: 6px 28px 6px 12px;
+            padding: {padding_val};
             color: {TEXT_HEAD};
             font-weight: 600;
             font-size: 12px;
@@ -132,7 +137,7 @@ def get_combobox_qss() -> str:
         }}
         QComboBox::drop-down {{
             subcontrol-origin: padding;
-            subcontrol-position: top right;
+            subcontrol-position: {subcontrol_pos};
             width: 24px;
             border: none;
             background: transparent;
@@ -142,7 +147,7 @@ def get_combobox_qss() -> str:
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
             border-top: 5px solid {TEXT_MUTED};
-            margin-right: 8px;
+            {arrow_margin}
         }}
         QComboBox QAbstractItemView {{
             background-color: #ffffff;
@@ -156,8 +161,44 @@ def get_combobox_qss() -> str:
         }}
         QComboBox QAbstractItemView::item {{
             height: 28px;
-            padding-left: 8px;
+            {item_padding}
             border-radius: 4px;
+        }}
+    """
+
+
+def get_groupbox_qss(is_rtl: bool = False) -> str:
+    """Returns clean styling for QGroupBox containers and titles that respect Qt's native mirroring."""
+    return f"""
+        QGroupBox {{
+            font-weight: 700;
+            font-size: 13px;
+            color: {TEXT_HEAD};
+            border: 1px solid {CARD_BORDER};
+            border-radius: 8px;
+            margin-top: 14px;
+            padding-top: 18px;
+            background-color: #ffffff;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            padding: 0 6px;
+            margin-left: 14px;
+            margin-right: 14px;
+            color: {TEXT_HEAD};
+        }}
+    """
+
+
+def get_sidebar_qss(is_rtl: bool = False) -> str:
+    """Returns dynamic border styling for the navigation rail based on layout direction."""
+    border_side = "left" if is_rtl else "right"
+    other_side = "right" if is_rtl else "left"
+    return f"""
+        QWidget#navigationRail {{
+            background-color: {SIDEBAR_BG};
+            border-{border_side}: 1px solid {SIDEBAR_BORDER};
+            border-{other_side}: none;
         }}
     """
 

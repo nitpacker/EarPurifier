@@ -7,9 +7,14 @@ from PySide6.QtGui import (
 )
 
 from .theme import (
-    ACCENT_EMERALD, ACCENT_TEAL, ACCENT_RED, TEXT_FAINT,
+    ACCENT_EMERALD, ACCENT_TEAL, ACCENT_RED, TEXT_FAINT, FONT_FAMILY,
     get_asset_path
 )
+
+try:
+    from i18n import t, is_rtl
+except ImportError:
+    from src.i18n import t, is_rtl
 
 
 # ─── Clean '✕' Mark Button (NO TRASH CONCEPT) ─────────────────────────────────
@@ -23,8 +28,11 @@ class CleanCloseButton(QPushButton):
         super().__init__(parent)
         self.setFixedSize(26, 26)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("Remove from history")
+        self.setToolTip(t("btn_remove_tooltip"))
         self._hovered = False
+
+    def retranslate_ui(self, tooltip: str = ""):
+        self.setToolTip(tooltip or t("btn_remove_tooltip"))
 
     def enterEvent(self, event):
         self._hovered = True
@@ -97,6 +105,10 @@ class SidebarLogo(QWidget):
         self.pixmap = None
         if os.path.exists(self.logo_path):
             self.pixmap = QPixmap(self.logo_path)
+        self.setToolTip(t("logo_tooltip"))
+
+    def retranslate_ui(self, tooltip: str = ""):
+        self.setToolTip(tooltip or t("logo_tooltip"))
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -156,10 +168,11 @@ class SidebarNavButton(QPushButton):
             painter.setBrush(QColor(16, 185, 129, 38))
             painter.setPen(QPen(QColor(16, 185, 129, 70), 1))
             painter.drawRoundedRect(rect, 8, 8)
-            # Left active indicator pill
+            # Active indicator pill (mirrored in RTL)
             painter.setBrush(QColor(ACCENT_EMERALD))
             painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(0, 14, 3, 28, 1.5, 1.5)
+            pill_x = self.width() - 3 if is_rtl() else 0
+            painter.drawRoundedRect(pill_x, 14, 3, 28, 1.5, 1.5)
         elif self._hovered:
             painter.setBrush(QColor(255, 255, 255, 12))
             painter.setPen(Qt.NoPen)
@@ -205,9 +218,15 @@ class SidebarNavButton(QPushButton):
                 painter.drawLine(cx, cy - 7, cx, cy + 7)
 
         painter.setPen(text_color)
-        font = QFont("Segoe UI", 9, QFont.Bold if self.is_active else QFont.DemiBold)
+        font = QFont(FONT_FAMILY, 9, QFont.Bold if self.is_active else QFont.DemiBold)
         painter.setFont(font)
         painter.drawText(0, 35, self.width(), 16, Qt.AlignCenter, self.label_text)
+
+    def retranslate_ui(self, label_text: str, tooltip: str = ""):
+        self.label_text = label_text
+        if tooltip:
+            self.setToolTip(tooltip)
+        self.update()
 
 
 # ─── Group Header Widget (ClickUp Category Pills) ─────────────────────────────

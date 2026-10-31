@@ -14,6 +14,11 @@ from .theme import (
 )
 from .components import CleanCloseButton
 
+try:
+    from i18n import t, translate_worker_message
+except ImportError:
+    from src.i18n import t, translate_worker_message
+
 
 # ─── Job Card Presentation View ───────────────────────────────────────────────
 
@@ -41,7 +46,9 @@ class JobWidget(QWidget):
         self.duration = job_dict.get("duration", 0.0)
         self.mode = mode
         self.current_status = "PENDING"
+        self.current_badge_state = "queued"
         self.remaining_seconds = 0
+        self._raw_message = ""
         
         # Calculate elapsed seconds ignoring the PENDING wait time
         try:
@@ -119,10 +126,9 @@ class JobWidget(QWidget):
         # Engine Tag (Soft Mint Pill)
         model_name = job_dict.get("model")
         if not model_name:
-            # Fallback for older jobs
             model_name = "Kaggle T4" if "Cloud" in mode else "RoFormer"
         
-        mode_prefix = "Cloud" if "Cloud" in mode else "Local"
+        mode_prefix = t("tag_mode_cloud") if "Cloud" in mode else t("tag_mode_local")
         self.tag_engine = QLabel(f"{mode_prefix} · {model_name}")
         self.tag_engine.setStyleSheet(f"""
             background-color: rgba(16, 185, 129, 0.1);
@@ -136,7 +142,7 @@ class JobWidget(QWidget):
 
         # Elapsed Time Tag
         emins, esecs = divmod(self.elapsed_seconds, 60)
-        initial_elapsed = f"{emins}m {esecs}s" if emins > 0 else f"{esecs}s"
+        initial_elapsed = t("time_ms_format", mins=emins, secs=esecs) if emins > 0 else t("time_s_format", secs=esecs)
         self.tag_elapsed = QLabel(initial_elapsed)
         self.tag_elapsed.setStyleSheet(f"""
             background-color: #edf5f0;
@@ -165,12 +171,12 @@ class JobWidget(QWidget):
             top_row.addWidget(self.lbl_eta)
 
         # Status Badge Pill
-        self.lbl_badge = QLabel("QUEUED")
+        self.lbl_badge = QLabel(t("badge_queued"))
         self._set_badge_style("queued")
         top_row.addWidget(self.lbl_badge)
 
         # Abort Button (when active)
-        self.btn_abort = QPushButton("⏹ Abort")
+        self.btn_abort = QPushButton(t("btn_abort"))
         self.btn_abort.setCursor(Qt.PointingHandCursor)
         self.btn_abort.setStyleSheet(f"""
             QPushButton {{
@@ -233,8 +239,9 @@ class JobWidget(QWidget):
         self.timer.timeout.connect(self._on_timer_tick)
 
     def _set_badge_style(self, state: str):
+        self.current_badge_state = state
         if state == "running":
-            self.lbl_badge.setText("IN PROGRESS")
+            self.lbl_badge.setText(t("badge_running"))
             self.lbl_badge.setStyleSheet(f"""
                 background-color: {ACCENT_BLUE};
                 color: #ffffff;
@@ -247,7 +254,7 @@ class JobWidget(QWidget):
             self.lbl_status_icon.setText("●")
             self.lbl_status_icon.setStyleSheet(f"font-size: 14px; color: {ACCENT_BLUE}; background: transparent;")
         elif state == "completed":
-            self.lbl_badge.setText("COMPLETED")
+            self.lbl_badge.setText(t("badge_completed"))
             self.lbl_badge.setStyleSheet(f"""
                 background-color: {ACCENT_EMERALD};
                 color: #ffffff;
@@ -260,7 +267,7 @@ class JobWidget(QWidget):
             self.lbl_status_icon.setText("✓")
             self.lbl_status_icon.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {ACCENT_EMERALD}; background: transparent;")
         elif state == "aborted":
-            self.lbl_badge.setText("ABORTED")
+            self.lbl_badge.setText(t("badge_aborted"))
             self.lbl_badge.setStyleSheet(f"""
                 background-color: {ACCENT_AMBER};
                 color: #ffffff;
@@ -273,7 +280,7 @@ class JobWidget(QWidget):
             self.lbl_status_icon.setText("○")
             self.lbl_status_icon.setStyleSheet(f"font-size: 14px; color: {ACCENT_AMBER}; background: transparent;")
         elif state == "failed":
-            self.lbl_badge.setText("FAILED")
+            self.lbl_badge.setText(t("badge_failed"))
             self.lbl_badge.setStyleSheet(f"""
                 background-color: {ACCENT_RED};
                 color: #ffffff;
@@ -286,7 +293,7 @@ class JobWidget(QWidget):
             self.lbl_status_icon.setText("✕")
             self.lbl_status_icon.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {ACCENT_RED}; background: transparent;")
         else:
-            self.lbl_badge.setText("QUEUED")
+            self.lbl_badge.setText(t("badge_queued"))
             self.lbl_badge.setStyleSheet(f"""
                 background-color: {TEXT_FAINT};
                 color: #ffffff;
@@ -322,12 +329,12 @@ class JobWidget(QWidget):
         # Elapsed Time
         self.elapsed_seconds += 1
         emins, esecs = divmod(self.elapsed_seconds, 60)
-        self.tag_elapsed.setText(f"{emins}m {esecs}s" if emins > 0 else f"{esecs}s")
+        self.tag_elapsed.setText(t("time_ms_format", mins=emins, secs=esecs) if emins > 0 else t("time_s_format", secs=esecs))
 
         # ETA Logic (Cloud only)
         if self.mode == "Cloud (Kaggle)":
             if self.current_status in ["PENDING", "EXTRACTING", "UPLOADING"]:
-                self.lbl_eta.setText("ETA: Calculating...")
+                self.lbl_eta.setText(t("eta_calculating"))
             elif self.current_status in ["PROCESSING_CLOUD", "DOWNLOADING", "REMUXING"]:
                 if not getattr(self, "eta_initialized", False):
                     # Initialize ETA when Kaggle actually starts processing (Adjusted to be more realistic)
@@ -337,9 +344,9 @@ class JobWidget(QWidget):
                 self.remaining_seconds -= 1
                 if self.remaining_seconds > 0:
                     mins, secs = divmod(self.remaining_seconds, 60)
-                    self.lbl_eta.setText(f"ETA: ~{mins}m {secs}s" if mins > 0 else f"ETA: ~{secs}s")
+                    self.lbl_eta.setText(t("eta_time_ms", mins=mins, secs=secs) if mins > 0 else t("eta_time_s", secs=secs))
                 else:
-                    self.lbl_eta.setText("ETA: Anytime now...")
+                    self.lbl_eta.setText(t("eta_anytime"))
 
     def update_status(self, status: str):
         self.current_status = status
@@ -355,28 +362,32 @@ class JobWidget(QWidget):
             self._set_badge_style("completed")
             if self.mode == "Cloud (Kaggle)":
                 self.lbl_eta.setVisible(False)
-            self.lbl_message.setText("Purification complete · Audio isolated")
+            self._raw_message = "Purification complete · Audio isolated"
+            self.lbl_message.setText(t("msg_purification_complete"))
             self.progress.setVisible(False)
         elif status == "ABORTED":
             self.timer.stop()
             self._set_badge_style("aborted")
             if self.mode == "Cloud (Kaggle)":
                 self.lbl_eta.setVisible(False)
-            self.lbl_message.setText("Job aborted")
+            self._raw_message = "Job aborted"
+            self.lbl_message.setText(t("msg_job_aborted"))
             self.progress.setVisible(False)
         elif status in ["ERROR", "FAILED"]:
             self.timer.stop()
             self._set_badge_style("failed")
             if self.mode == "Cloud (Kaggle)":
                 self.lbl_eta.setVisible(False)
-            self.lbl_message.setText("Processing failed")
+            self._raw_message = "Processing failed"
+            self.lbl_message.setText(t("msg_processing_failed"))
             self.progress.setVisible(False)
         elif status == "PENDING":
             self._set_badge_style("queued")
             if self.mode == "Cloud (Kaggle)":
                 self.lbl_eta.setVisible(True)
-                self.lbl_eta.setText("In Queue")
-            self.lbl_message.setText("Waiting in queue...")
+                self.lbl_eta.setText(t("eta_in_queue"))
+            self._raw_message = "Waiting in queue..."
+            self.lbl_message.setText(t("msg_waiting_queue"))
             self.progress.setVisible(True)
             self.progress.setRange(0, 0)
         else:
@@ -385,11 +396,13 @@ class JobWidget(QWidget):
                 self.lbl_eta.setVisible(True)
             self.progress.setVisible(True)
             self.progress.setRange(0, 0)
-            if not self.lbl_message.text() or self.lbl_message.text() == "Waiting in queue...":
-                self.lbl_message.setText("Isolating vocals with AI...")
+            if not self._raw_message or self._raw_message == "Waiting in queue...":
+                self._raw_message = "Isolating vocals with AI..."
+                self.lbl_message.setText(t("msg_isolating_vocals"))
 
     def update_message(self, message: str):
-        self.lbl_message.setText(message)
+        self._raw_message = message
+        self.lbl_message.setText(translate_worker_message(message))
 
     def update_state(self, job_data: dict):
         """Update widget presentation state from a job dictionary."""
@@ -400,3 +413,31 @@ class JobWidget(QWidget):
             self.update_status(job_data["status"])
         if "message" in job_data:
             self.update_message(job_data["message"])
+
+    def retranslate_ui(self):
+        """Dynamically refreshes text and tooltips when application language changes."""
+        model_name = self.job_dict.get("model") or ("Kaggle T4" if "Cloud" in self.mode else "RoFormer")
+        mode_prefix = t("tag_mode_cloud") if "Cloud" in self.mode else t("tag_mode_local")
+        self.tag_engine.setText(f"{mode_prefix} · {model_name}")
+
+        self.btn_abort.setText(t("btn_abort"))
+        self.btn_delete.retranslate_ui()
+
+        self._set_badge_style(self.current_badge_state)
+
+        emins, esecs = divmod(self.elapsed_seconds, 60)
+        self.tag_elapsed.setText(t("time_ms_format", mins=emins, secs=esecs) if emins > 0 else t("time_s_format", secs=esecs))
+
+        if self._raw_message:
+            self.lbl_message.setText(translate_worker_message(self._raw_message))
+
+        if self.mode == "Cloud (Kaggle)" and self.lbl_eta.isVisible():
+            if self.current_status == "PENDING":
+                self.lbl_eta.setText(t("eta_in_queue"))
+            elif self.current_status in ["EXTRACTING", "UPLOADING"]:
+                self.lbl_eta.setText(t("eta_calculating"))
+            elif self.remaining_seconds > 0:
+                mins, secs = divmod(self.remaining_seconds, 60)
+                self.lbl_eta.setText(t("eta_time_ms", mins=mins, secs=secs) if mins > 0 else t("eta_time_s", secs=secs))
+            elif getattr(self, "eta_initialized", False):
+                self.lbl_eta.setText(t("eta_anytime"))
