@@ -1,125 +1,413 @@
-# EarPurifier - Engineering Wiki & Technical Architecture
+# Technical Architecture
 
-This document serves as the definitive engineering reference for the EarPurifier codebase. It maps the domain architecture, dependency constraints, and edge-case resiliency mechanisms. 
-
-**Any developer or AI modifying this codebase MUST review the Binding Rules (Section 8) before writing code.**
+*Verified against codebase (v0.0.1).*
 
 ---
 
-## 1. System Overview
+## Document Scope
 
-EarPurifier is a desktop application (PySide6) providing state-of-the-art AI audio isolation. It implements a **Dual Engine Architecture**:
-*   **Local Processing**: Executes `audio-separator` directly on the user's local Nvidia GPU. Requires significant local hardware.
-*   **Cloud Processing**: Offloads workload to Kaggle's free T4 Cloud GPUs via headless Python worker scripts. Utilizes a V2/V3 Cache Dataset to bypass Kaggle network bottlenecks, dropping spin-up times from 45s to 2s.
-
----
-
-## 2. Domain Map: Where to Look
-
-When debugging or extending the application, start your search here:
-
-### 🖥️ Presentation Layer (UI)
-*   **`main.py`**: The PySide6 entry point. Houses the main window, settings dialog, tab states, and the `JobCard` UI components. 
-    *   *Look here for:* UI freezes, button connections, CSS styling, ETA display updates, and thread initialization.
-*   **`config_manager.py`**: Interacts with `%APPDATA%/EarPurifier/config.json`.
-    *   *Look here for:* Adding new user preferences or global settings.
-
-### 🧠 State & Concurrency Layer
-*   **`queue_manager.py`**: The heart of state persistence (`%APPDATA%/EarPurifier/job_state.json`). 
-    *   *Look here for:* Job status transitions, elapsed time calculations, and startup temp/crash cleanup.
-*   **`processor_thread.py`**: The **Cloud Engine** (`JobProcessor` QThread). 
-    *   *Look here for:* Kaggle network orchestrations, retry loops, dynamic worker script injection, and Kaggle execution log piping.
-*   **`local_processor.py`**: The **Local Engine** (`LocalJobProcessor` QThread).
-    *   *Look here for:* Subprocess executions of the local `audio-separator` engine.
-
-### 🎬 Media & Integration Layer
-*   **`media_engine.py`**: Wrapper for `ffmpeg` and `ffprobe`.
-    *   *Look here for:* FLAC extraction, audio padding (to fix AI silence drops), and `-c:v copy` remuxing.
-*   **`kaggle_bridge.py`**: Abstraction over the `kaggle` Python API.
-    *   *Look here for:* Dataset pushing, kernel dispatching, status polling, output downloading, and kernel log retrieval.
-*   **`worker/worker.py`**: The isolated, headless Python script dispatched to Kaggle.
-    *   *Look here for:* What the Kaggle cloud GPU is actually executing (offline pip installs, online fallback, GPU assertion, separation).
-
-### 🛠️ Tooling
-*   **`build.py`**: The smart PyInstaller build orchestration script.
-*   **`logger_setup.py`**: Rotating file logging to `%APPDATA%/EarPurifier/applogs/` and rotation for `kaggle_logs/`.
-*   **`docs/archive/build_master_cache.py`**: Automates generating offline wheels and model datasets on Kaggle.
+- **In scope**:
+  - System topology, architectural boundaries, component inventory, thread affinity, and IPC protocols.
+  - End-to-end job state machine and lifecycle data contracts.
+  - Dual-engine mechanics (Local Subprocess vs. Kaggle Cloud Master Cache).
+  - Media pipeline specifications: container probing, stream extraction, alignment, and hardware remuxing.
+  - Security architecture, Windows DPAPI encryption at rest, and atomic persistence schemas.
+  - Edge-case resiliency catalog (network retry loops, GCS multi-threaded range downloader, PyInstaller compatibility).
+- **Out of scope**:
+  - Concrete operational procedures, releases, and incident response playbooks (governed by [`OPERATIONS.md`](OPERATIONS.md)).
+  - Non-negotiable engineering rules, DOs/DON'Ts, and severity levels (governed by [`BINDING_RULES.md`](BINDING_RULES.md)).
+  - End-user installation guides, marketing overviews, and screenshots (governed by [`README.md`](../README.md)).
 
 ---
 
-## 3. The Job Lifecycle Pipeline
+## Governance & Update Policy
 
-Regardless of the engine (Cloud/Local), jobs strictly adhere to a synchronous pipeline:
-
-1.  **Queueing**: Video is added. `QueueManager` snapshots the chosen `job["model"]` to prevent UI setting changes from mutating queued jobs. Status: `PENDING`.
-2.  **Extraction**: `media_engine.extract_audio` pulls a lossless 48kHz FLAC to `%APPDATA%/EarPurifier/temp/<job_id>/audio.flac`. `started_at` is stamped. Status: `EXTRACTING`.
-3.  **Separation (AI Phase)**:
-    *   *Local*: `local_processor.py` invokes the local engine subprocess.
-    *   *Cloud*: `kaggle_bridge.py` uploads the FLAC -> dispatches `worker.py` -> Kaggle mounts the Cache Dataset -> runs separation -> `processor_thread.py` polls and downloads the output.
-4.  **Alignment**: `media_engine.pad_or_trim_audio` ensures the new audio exactly matches original duration.
-5.  **Remuxing**: `media_engine.remux_video` merges the original video stream with the new audio losslessly. Saved to the user's output directory. Status: `COMPLETED`.
+- **Update Triggers**: Any modification to thread boundaries, IPC handshakes, state persistence schemas (`job_state.json`, `config.json`), model inference pipelines, media stream mapping logic, or Kaggle cloud integration requires an immediate, synchronized update to this document.
+- **Exclusion Policy**: Operational commands, step-by-step incident runbooks, and strict coding invariants must NOT be recorded here; route them to their respective single-source-of-truth documents.
 
 ---
 
-## 4. The Cloud Master Cache Architecture
+## Table of Contents
 
-To make Cloud processing instant (~60s total), EarPurifier bypasses Kaggle's slow internet connection using an offline cache.
-
-*   **The Dataset (`earpurifier-cloud-assets-v2`)**: Hosted on the developer's Kaggle account. Contains pre-downloaded `.ckpt`/`.onnx` models, and a `wheels/` directory of binary `.whl` files.
-    *   *Model weights* (`.onnx`, `.ckpt`) are raw data: they are Python-agnostic and never expire across Python runtime upgrades.
-    *   *Wheel files* (`.whl`) are compiled C-extensions tied to specific CPython ABIs (`cp312`, `cp313`).
-*   **Execution**: `worker.py` uses `os.walk` to find this dataset (as Kaggle mounts are dynamically hashed). It runs `pip install --no-index --find-links=/path/wheels audio-separator[gpu] onnxruntime-gpu`. This drops Kaggle setup from 45s to 2s.
-*   **Disaster Recovery & Evolution**: When Kaggle upgrades its container Python version (e.g. from 3.12 to 3.13), older wheels become incompatible. The worker script gracefully falls back to installing from PyPI online so jobs continue to work. Use `docs/archive/build_master_cache.py` to regenerate the wheel cache on Kaggle and push an updated cache version to restore 2-second startup times.
+1. [System Overview & Product Identity](#1-system-overview--product-identity)
+2. [Process & Concurrency Topology](#2-process--concurrency-topology)
+   - 2.1. [Thread Affinity & Event Marshalling](#21-thread-affinity--event-marshalling)
+   - 2.2. [Single-Instance IPC Handshake](#22-single-instance-ipc-handshake)
+   - 2.3. [Application Initialization Sequence](#23-application-initialization-sequence)
+3. [Domain Map](#3-domain-map)
+4. [Component Inventory Table](#4-component-inventory-table)
+5. [The Job Lifecycle Pipeline](#5-the-job-lifecycle-pipeline)
+   - 5.1. [State Machine Transition Graph](#51-state-machine-transition-graph)
+   - 5.2. [Stage-by-Stage Data Contracts](#52-stage-by-stage-data-contracts)
+6. [Dual Engine Architecture](#6-dual-engine-architecture)
+   - 6.1. [Local Engine Execution Harness](#61-local-engine-execution-harness)
+   - 6.2. [Cloud Engine & Kaggle Infrastructure](#62-cloud-engine--kaggle-infrastructure)
+   - 6.3. [Master Cache Acceleration (`earpurifier-cloud-assets-v2`)](#63-master-cache-acceleration-earpurifier-cloud-assets-v2)
+7. [Media Engine & Multi-Track Stream Preservation](#7-media-engine--multi-track-stream-preservation)
+   - 7.1. [Container Probing & Stream Classification](#71-container-probing--stream-classification)
+   - 7.2. [Lossless Audio Extraction](#72-lossless-audio-extraction)
+   - 7.3. [Duration Padding & Alignment](#73-duration-padding--alignment)
+   - 7.4. [OS Hardware Remuxing & Codec Selection](#74-os-hardware-remuxing--codec-selection)
+8. [Security, DPAPI & State Persistence Schema](#8-security-dpapi--state-persistence-schema)
+   - 8.1. [Windows DPAPI Encryption Architecture](#81-windows-dpapi-encryption-architecture)
+   - 8.2. [Configuration Schema (`config.json`)](#82-configuration-schema-configjson)
+   - 8.3. [Queue State Schema (`job_state.json`)](#83-queue-state-schema-job_statejson)
+   - 8.4. [Atomic File Replacement Mechanics](#84-atomic-file-replacement-mechanics)
+9. [Resiliency & Edge-Case Catalog](#9-resiliency--edge-case-catalog)
+10. [Cross-Document References](#10-cross-document-references)
 
 ---
 
-## 5. Known Edge Cases & Resiliency Mechanisms
+## 1. System Overview & Product Identity
 
-If you encounter unexpected behavior, it is likely governed by one of these engineered edge cases:
+EarPurifier is a desktop audio isolation and vocal purification studio engineered with PySide6. The application is built to remove background music, instrumentation, and noise from video and audio containers while preserving multi-track stream graphs, subtitles, metadata, and container timing.
 
-*   **Kaggle Network Drops (`IncompleteRead`)**: Downloading/Uploading 20MB files via the Kaggle API routinely fails due to dropped packets. **Fix:** Every network call in `processor_thread.py` is wrapped in a strict 5-attempt retry loop with a 3-second sleep.
-*   **Kaggle Dataset Race Conditions & Unique Buffers**: Previously, jobs shared a single dataset buffer. This caused race conditions when multiple jobs tried to update the dataset concurrently, and Kaggle's versioning was slow to propagate. **Fix:** `kaggle_bridge.py` creates a unique, disposable dataset (e.g. `earpurifier-audio-buffer-<uuid>`) for *every single job*. This allows the user to queue and process 5 videos simultaneously in the cloud without them interfering.
-*   **PyInstaller tqdm Crash (The Invisible Abort)**: The Kaggle SDK internally uses the `tqdm` progress bar. In a PyInstaller `--windowed` executable, the default `sys.stderr` is detached. When `tqdm` attempts to print the progress bar, it throws an exception that the Kaggle SDK silently catches, causing uploads to mysteriously abort and submit empty datasets (resulting in "Please upload at least one file" errors). **Fix:** We strictly pass `quiet=True` to Kaggle SDK methods (like `dataset_create_new`) to disable `tqdm` and bypass the crash entirely.
-*   **Kaggle API Token Format Migration (The `KGAT_` Bug)**: Kaggle recently deprecated standard 32-hex API keys in favor of Personal Access Tokens (prefixed with `KGAT_`). The Kaggle SDK will *violently reject* `KGAT_` tokens with a `401 Unauthorized` if they are mapped to the legacy `KAGGLE_KEY` environment variable (which forces HTTP Basic Auth). **Fix:** `kaggle_bridge.py` dynamically inspects the key string. If it detects `KGAT_`, it maps it to `KAGGLE_API_TOKEN` to force the SDK to use Bearer Auth. It also aggressively `.pop()`s both keys from `os.environ` before assignment to prevent memory pollution when users hot-swap keys.
-*   **Kaggle SDK Download Truncation (`IncompleteRead`)**: The official `kaggle.api.kernels_output` method has a fatal flaw: it lacks resumable download support. If a network stutter triggers an `IncompleteRead` while downloading massive output files from Google Cloud Storage, the SDK catches the error but explicitly opens the file in `"wb"` mode on the retry, truncating progress back to 0 bytes. This causes infinite download loops on slightly unstable connections. **Fix:** `kaggle_bridge.py` completely bypasses the SDK's download logic. It intercepts the raw GCS Signed URL via `list_kernel_session_output` and implements a multi-threaded `requests` downloader (4 concurrent connections via `ThreadPoolExecutor`) using the HTTP `Range: bytes=X-Y` header. *Note: Kaggle explicitly blocks `HEAD` requests (returns 404) on these signed URLs, so we extract the `Content-Length` via a streaming `GET` request before dispatching threads.* This stitches the file together safely and multiplies download speed by 4x, bypassing single-connection ISP throttling.
-*   **Kaggle Python Runtime Upgrades & Graceful Degradation**: When Kaggle updates its default Python runtime, pre-cached `.whl` files may fail offline installation. **Fix:** `worker.py` attempts offline install first; if cached wheels fail, it logs a warning and gracefully falls back to installing compatible versions from PyPI online. `worker.py` does not hardcode restrictive version pins.
-*   **Silent GPU -> CPU Fallback Prevention**: In certain driver or CUDA misconfigurations (e.g. CUDA 13 wheels looking for `libcublasLt.so.13` on a CUDA 12 host), ONNX Runtime bindings report CUDA as available, but session initialization silently falls back to `CPUExecutionProvider`, running 10x slower without failing. **Fix:** `worker.py` inspects both `ort.get_available_providers()` AND the active model session (`separator.model_instance.model_run.get_providers()`). If `"CUDAExecutionProvider"` is missing from the active session, it immediately raises `RuntimeError`, aborting in under 5 seconds to prevent burning GPU quota on a crawling CPU job.
-*   **Kaggle Kernel Execution Logs (`applogs/kaggle_logs/`)**: To avoid polluting `earpurifier.log` with high-volume kernel stdout/stderr, `processor_thread.py` safely fetches the kernel execution log upon job completion or error and writes it to `%APPDATA%/EarPurifier/applogs/kaggle_logs/<job_id>.log`. Failures to fetch logs are non-fatal and never crash the pipeline.
-*   **ETA Calculations (Cloud)**: Cloud jobs cannot precisely report progress percentages. **Fix:** `main.py` uses a deterministic formula (`remaining_seconds = 150 + (duration * 1.5)`) to run a local countdown. If it hits 0 early, it displays `"ETA: Anytime now..."`. Local jobs rely on stdout regex parsing for real percentages.
-*   **Vocal Track Matching**: The `audio-separator` output filename is unpredictable based on the model. **Fix:** The worker script explicitly checks `if "(vocals)" in f.lower():` and forcefully renames it to `clean_vocals.flac` before downloading.
-*   **Hardware-Accelerated Audio Remuxing**: FFmpeg's native `aac` encoder is single-threaded and defaults to an iterative two-loop algorithm, bottlenecking remux speed to ~100 fps (~5.5 minutes for 25-minute audio). **Fix:** `media_engine.remux_video` dynamically routes to OS-accelerated hardware AAC encoders (`aac_mf` on Windows, `aac_at` on macOS), accelerating remux speeds to ~1,500 fps (~25 seconds) with automatic fallback to standard native `aac` if the platform encoder is unavailable.
-*   **Storage Cleanup**: To prevent Kaggle from hitting limits and keeping a clutter of unique datasets, `processor_thread.py` calls `api.dataset_delete` to destroy the unique disposable dataset post-job. To prevent `%APPDATA%` from bloating locally, `QueueManager` actively runs `shutil.rmtree(temp)` on application startup to sweep orphaned files from force-closures.
+EarPurifier operates via an asymmetric **Dual-Engine Architecture**:
+- **Local Engine**: Spawns an isolated Python 3.11 environment managed via micromamba, running PyTorch with CUDA 12.1 hardware acceleration or CPU fallback.
+- **Cloud Engine**: Offloads compute to remote Kaggle T4 cloud GPUs via serverless worker scripts. It leverages an immutable offline asset cache (`earpurifier-cloud-assets-v2`) to eliminate container boot overhead and reduce spin-up latency from 45 seconds to 2 seconds.
 
 ---
 
-## 6. Dependency Matrix
+## 2. Process & Concurrency Topology
 
-EarPurifier relies on a fragile web of ML libraries. **Never arbitrarily update `requirements.txt`.**
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                Main Process (EarPurifier.exe)                          │
+│                                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │                    UI Thread (Qt Event Loop - QApplication)                      │  │
+│  │  • MainWindow, JobQueueSection, JobWidget, UpdateBannerWidget                    │  │
+│  │  • QLocalServer ("EarPurifier_SingleInstance_IPC")                               │  │
+│  │  • 1-second UI Timers (Elapsed Time, Client-Side ETA Countdown)                  │  │
+│  └──────────▲──────────────────▲──────────────────▲──────────────────▲──────────────┘  │
+│             │                  │                  │                  │                 │
+│      Queued Signals     Queued Signals     Queued Signals     Queued Signals           │
+│             │                  │                  │                  │                 │
+│  ┌──────────┴────────┐  ┌──────┴────────┐  ┌──────┴────────┐  ┌──────┴──────────────┐  │
+│  │ JobProcessor      │  │ LocalJob-     │  │ GitHubUpdate- │  │ Downloader Threads  │  │
+│  │ (QThread - Cloud) │  │ Processor     │  │ Checker       │  │ (FFmpeg, Engine,    │  │
+│  │ • Ephemeral GCS   │  │ (QThread)     │  │ (QThread)     │  │  Model)             │  │
+│  │ • 4-Thread GCS    │  │ • CLI Runner  │  │ • Raw Manifest│  │ • HTTP Streaming    │  │
+│  │   Range Downloader│  │ • Subprocess  │  │ • GitHub API  │  │ • Archive Extraction│  │
+│  └───────────────────┘  └──────┬────────┘  └───────────────┘  └─────────────────────┘  │
+└────────────────────────────────┼───────────────────────────────────────────────────────┘
+                                 │ subprocess.Popen
+                                 ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                    Child Subprocess Tree (Tracked via process_tracker)                 │
+│  • Local Engine: %APPDATA%/EarPurifier/env/Scripts/audio-separator.exe                 │
+│  • Transitory FFmpeg/FFprobe invocations                                               │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-| Dependency | Purpose | Strict Constraint |
+### 2.1. Thread Affinity & Event Marshalling
+To prevent thread contention and GUI freezing:
+- **UI Thread**: Owns all `QWidget` derived instances. Direct access to GUI elements from worker threads is structurally impossible.
+- **Worker QThreads**:
+  - `JobProcessor` (`processor_thread.py`): Manages Cloud Kaggle lifecycle, REST calls, kernel polling, and multi-threaded range downloads.
+  - `LocalJobProcessor` (`local_processor.py`): Manages local CLI execution and real-time pipe parsing.
+  - `GitHubUpdateChecker` (`update_checker.py`): Queries remote update manifests asynchronously.
+  - `FFmpegDownloader`, `EngineDownloader`, `ModelDownloader` (`dependency_manager.py`): Execute heavy network downloads.
+- **Inter-Thread Signaling**: Workers emit `progress_update`, `status_update`, `finished_job`, and `error_job` Qt Signals. The Qt meta-object compiler routes these across thread boundaries as `QMetaCallEvent` objects into the main thread's event loop.
+
+### 2.2. Single-Instance IPC Handshake
+File: `main.py`
+- **Server Pipe Name**: `"EarPurifier_SingleInstance_IPC"`
+- **Handshake Protocol**:
+  1. Secondary instance launches and attempts connection to `EarPurifier_SingleInstance_IPC` via `QLocalSocket`.
+  2. If connection succeeds (`waitForConnected(500)`):
+     - Writes `b"ACTIVATE\n"`, flushes (`waitForBytesWritten(500)`), and disconnects.
+     - Calls `os._exit(0)` for instantaneous process termination.
+  3. Primary instance receives incoming connection on `QLocalServer.newConnection`:
+     - Reads payload (`waitForReadyRead(500)`).
+     - If payload is `"ACTIVATE"`: invokes `window.showNormal()`, `window.raise_()`, and `window.activateWindow()` to restore and focus the window.
+     - If connection fails on boot, the primary instance calls `QLocalServer.removeServer(server_name)` to clean orphaned pipe descriptors and calls `local_server.listen(server_name)`.
+
+### 2.3. Application Initialization Sequence
+1. **OS Integration**: Configures `SetCurrentProcessExplicitAppUserModelID("EarPurifier.SproutAudio.Studio.2.0")` for taskbar icon binding. Configures Per-Monitor DPI Awareness v2 (`SetProcessDpiAwareness(2)`).
+2. **Crash Trap**: Binds `sys.excepthook = handle_uncaught_exception` to intercept unhandled exceptions and render localized modal alerts.
+3. **Single-Instance Check**: Validates that no existing instance is listening on `EarPurifier_SingleInstance_IPC`.
+4. **Filesystem Provisioning**: Creates `%APPDATA%/EarPurifier/` directory hierarchy (`temp/`, `empty_buffer/`, `applogs/`, `bin/`, `env/`).
+5. **State Reconciliation**: `QueueManager._load_state()` resets transient interrupted jobs to `"ERROR"` and cleans old temp directories.
+6. **Logging Initialization**: `logger_setup.setup_logger()` initializes a 10 MB rotating file handler and evicts logs older than 48 hours.
+7. **UI Instantiation**: Constructs `MainWindow`, applies initial theme and language (defaults to Arabic `"ar"` with Right-to-Left layout), and starts workers.
+8. **Deferred Update Check**: Schedules `start_auto_update_check()` via `QTimer.singleShot(2500)` to preserve instant startup responsiveness.
+
+---
+
+## 3. Domain Map
+
+| Domain | Files | Responsibilities |
 | :--- | :--- | :--- |
-| `PySide6` | Application UI framework | None |
-| `audio-separator[gpu]` | Core AI isolation engine | Unpinned in cloud worker; dynamically resolves compatible PyTorch/ONNX dependencies. |
-| `onnxruntime-gpu` | Hardware Acceleration | Pinned to `<1.27.0` (resolves to `1.26.0`) in worker and cache builder to align with Kaggle's CUDA 12.8 + cuDNN 9.x environment (releases >= 1.27.0 default to CUDA 13.0 and fail on Kaggle's `libcublasLt.so.12`). |
-| `kaggle` | Cloud orchestrator API | Must be careful with progress bars in PyInstaller (use `quiet=True`). |
-| `ffmpeg-python` | Media extraction | The host system must have the `ffmpeg` binary in PATH. |
+| **Presentation (UI)** | `ui/main_window.py`<br>`ui/job_queue_section.py`<br>`ui/job_widget.py`<br>`ui/components.py`<br>`ui/dialogs.py`<br>`ui/theme.py`<br>`ui/update_banner.py`<br>`ui/overlay_widgets.py`<br>`ui/queue_widgets.py` | PySide6 widget tree, custom vector painting, theme tokens (Soft Sage / Botanical Slate), dynamic RTL layout mirroring, modal dialogs, and non-blocking update banners. |
+| **Localization** | `i18n.py` | Bilingual translation dictionary (`ar`/`en`), Arabic pluralization rules, and runtime language retranslation without application restart. |
+| **State & Lifecycle** | `queue_manager.py`<br>`config_manager.py`<br>`process_tracker.py` | Concurrency synchronization (`threading.RLock`), atomic JSON persistence, Windows DPAPI encryption, and recursive process tree termination. |
+| **Cloud Engine** | `processor_thread.py`<br>`kaggle_bridge.py`<br>`worker/worker.py` | Kaggle API authentication (`KGAT_`), disposable dataset buffers, dynamic kernel injection, execution polling, and 4-thread chunked GCS downloader. |
+| **Local Engine** | `local_processor.py`<br>`dependency_manager.py` | Micromamba environment bootstrap, CUDA/CPU detection, subprocess pipe draining (`bufsize=1`), and real-time stdout regex tracking. |
+| **Media Pipeline** | `media_engine.py` | FFprobe stream probing, lossless FLAC extraction, audio padding/trimming, and hardware-accelerated remuxing (`aac_mf`, `aac_at`). |
+| **Tooling & Build** | `build.py`<br>`update_checker.py`<br>`logger_setup.py` | Isolated PyInstaller compilation pipeline, SemVer release checker, and bounded log rotation. |
 
 ---
 
-## 7. Build & Release Engineering
+## 4. Component Inventory Table
 
-The `build.py` script is highly specialized.
-*   **Smart Virtual Environments**: PyInstaller sweeps the entire Python environment into the `.exe`. To prevent a 2GB executable, `build.py` automatically isolates a clean `venv`, installs exactly `requirements.txt`, and builds from there.
-*   **Artifact Cleanup**: Automatically removes `.spec` files and intermediate `build/` directories post-compilation.
+| Module | Primary Classes / Symbols | Thread Affinity | State Managed | I/O Operations |
+| :--- | :--- | :--- | :--- | :--- |
+| `main.py` | `handle_uncaught_exception`, `main` | Main UI Thread | Process lifecycle, Single-Instance IPC | `QLocalServer`, `QLocalSocket` |
+| `ui/main_window.py` | `MainWindow`, `SidebarLogo` | Main UI Thread | Navigation index, active worker thread handles | Reads `config.json`, triggers process launches |
+| `ui/job_queue_section.py`| `JobQueueSection` | Main UI Thread | View filter state, selection mode, batch lists | Invokes `QueueManager` mutations |
+| `ui/job_widget.py` | `JobWidget` | Main UI Thread | Local card presentation, 1-second countdown timer | Local UI timer updates |
+| `ui/components.py` | `SidebarNavButton`, `EngineTelemetryPill`, `RotatingSpinner` | Main UI Thread | Vector painting state, breath timer phase | In-memory canvas rendering |
+| `ui/dialogs.py` | `SettingsDialog`, `DeleteConfirmDialog`, `AudioTrackSelectDialog` | Main UI Thread | Form entries, transient selections | Reads/writes `config.json` via `ConfigManager` |
+| `ui/theme.py` | `Theme`, `ThemeMode` | Main UI Thread | Color tokens, QSS templates, font families | Resolves SVG assets on disk |
+| `queue_manager.py` | `QueueManager` | Thread-Safe (Any) | `self.state["jobs"]` protected by `threading.RLock` | Atomic read/write `%APPDATA%/.../job_state.json` |
+| `config_manager.py`| `ConfigManager` | Thread-Safe (Any) | Application preferences, encrypted API key | Atomic read/write `%APPDATA%/.../config.json` |
+| `process_tracker.py`| `register_process`, `kill_process_tree`, `cleanup_all_subprocesses` | Thread-Safe (Any) | `_ACTIVE_SUBPROCESSES: Set[Popen]` | Subprocess signals, `taskkill` executions |
+| `processor_thread.py`| `JobProcessor` | Cloud Worker QThread | Active Kaggle kernel ID, retry counters | Network REST calls to Kaggle, temporary audio files |
+| `kaggle_bridge.py` | `KaggleBridge` | Cloud Worker QThread | Disposable dataset metadata, GCS URL tokens | Multi-threaded HTTP Range GET requests, Kaggle SDK |
+| `local_processor.py`| `LocalJobProcessor` | Local Worker QThread | Active subprocess handle, progress percentage | Subprocess pipe reading (`stdout`/`stderr`), disk audio |
+| `media_engine.py` | `get_duration`, `probe_container`, `extract_audio`, `remux_media` | Worker Thread Context| Stateless functional operations | Spawns `ffmpeg.exe` and `ffprobe.exe` subprocesses |
+| `update_checker.py`| `GitHubUpdateChecker` | Checker QThread | Cached release metadata, SemVer tuples | HTTPS queries to raw manifest and GitHub API |
+| `logger_setup.py` | `setup_logger` | Global | Python logging handlers | Rotating disk writes to `applogs/earpurifier.log` |
 
 ---
 
-## 8. Binding Rules For Developers
+## 5. The Job Lifecycle Pipeline
 
-When contributing to this codebase, you **must** adhere to the following rules:
+### 5.1. State Machine Transition Graph
 
-1.  **Do NOT Block the UI Thread:** Never call `.wait()` on `cloud_thread` or `local_thread` inside `main.py` when settings change. Threads must read config dynamically. Blocking the UI thread during a Kaggle HTTP request will deadlock the application.
-2.  **Respect the Job Snapshot:** Jobs inherit their model from `job["model"]`, NOT from the live `ConfigManager`. This allows users to queue different models simultaneously. Do not regress this by making background threads read live global settings.
-3.  **Elapsed Time Integrity:** `elapsed_seconds` must only increment if `status != PENDING`. Do not include queue wait times in final benchmarks.
-4.  **Sync Local & Cloud Dependencies:** If you update an AI dependency in `requirements.txt` to run locally, you **must** rebuild and publish a new Kaggle Master Cache. The cloud engine is optimized for offline cache hits; if dependencies drift, jobs gracefully fall back to PyPI but take ~30s longer.
-5.  **Dependency Compatibility in Cloud Worker:** Do not pin to outdated minor releases that lack modern Python ABI wheels (e.g. legacy `1.19.2` lacked Python 3.13). However, maintain environment alignment constraints where upstream defaults break host hardware (e.g. `onnxruntime-gpu<1.27.0` to remain on CUDA 12 rather than defaulting to CUDA 13).
+```
+                                  ┌─────────────┐
+                                  │   PENDING   │ ◄─── QueueManager.add_job()
+                                  └──────┬──────┘
+                                         │ Worker picks up next job
+                                         ▼
+                                  ┌─────────────┐
+                                  │ EXTRACTING  │ ◄─── media_engine.extract_audio()
+                                  └──────┬──────┘
+                                         │ Lossless FLAC extracted
+                    ┌────────────────────┴────────────────────┐
+                    │ (Cloud Engine)                          │ (Local Engine)
+                    ▼                                         ▼
+             ┌─────────────┐                           ┌──────────────────┐
+             │  UPLOADING  │                           │ PROCESSING_LOCAL │
+             └──────┬──────┘                           └────────┬─────────┘
+                    │ Kaggle buffer ingest complete             │
+                    ▼                                           │
+          ┌──────────────────┐                                  │
+          │ PROCESSING_CLOUD │                                  │
+          └─────────┬────────┘                                  │
+                    │ Kaggle kernel status: COMPLETE            │
+                    ▼                                           │
+             ┌─────────────┐                                    │
+             │ DOWNLOADING │ (4-Thread Chunked GCS Downloader)  │
+             └──────┬──────┘                                    │
+                    │ Output FLAC reconstructed                 │
+                    └────────────────────┬──────────────────────┘
+                                         │
+                                         ▼
+                                  ┌─────────────┐
+                                  │  REMUXING   │ ◄─── media_engine.remux_media()
+                                  └──────┬──────┘
+                                         │ Container assembled losslessly
+                    ┌────────────────────┴────────────────────┐
+                    ▼                                         ▼
+             ┌─────────────┐                           ┌─────────────┐
+             │  COMPLETED  │                           │    ERROR    │
+             └─────────────┘                           └─────────────┘
+              (Terminal)                                (Terminal)
+```
+
+### 5.2. Stage-by-Stage Data Contracts
+
+1. **Queueing (`PENDING`)**:
+   - `media_engine.probe_container()` inspects input. If $> 1$ audio stream exists, `AudioTrackSelectDialog` prompts the user.
+   - `QueueManager.add_job()` captures an immutable snapshot: file path, duration, selected audio track, mode, and model name.
+   - Initial state written atomically to `job_state.json`.
+2. **Extraction (`EXTRACTING`)**:
+   - `started_at` ISO-8601 UTC timestamp stamped on the job.
+   - Invokes `media_engine.extract_audio()` to generate a 48,000 Hz, 2-channel stereo FLAC file in `%APPDATA%/EarPurifier/temp/<job_id>/audio_<job_id[:8]>.flac`.
+3. **AI Separation Phase**:
+   - **Local Path (`PROCESSING_LOCAL`)**: `LocalJobProcessor` launches isolated `audio-separator.exe`. Real-time progress is scraped from stdout regex `r'(\d{1,3})%'` and dispatched to UI.
+   - **Cloud Path (`UPLOADING` $\to$ `PROCESSING_CLOUD` $\to$ `DOWNLOADING`)**:
+     - Creates ephemeral dataset buffer `{username}/earpurifier-audio-buffer-{job_id[:8]}`.
+     - Waits 45 seconds for Kaggle backend GCS ingestion.
+     - Pushes worker kernel containing injected model specifications.
+     - Polls status every 30 seconds (sliced into 1-second ticks for responsive abort handling).
+     - Downloads `clean_vocals.flac` via 4-thread chunked HTTP Range queries.
+4. **Remuxing & Assembly (`REMUXING`)**:
+   - `media_engine.pad_or_trim_audio()` guarantees exact duration parity with the source file.
+   - `media_engine.remux_media()` maps original video tracks (`-map 0:v? -c:v copy`), original subtitle tracks (`-map 0:s? -c:s copy`), and replaces the targeted audio stream with hardware-accelerated encoding (`aac_mf`/`aac_at`).
+5. **Completion (`COMPLETED`)**:
+   - `final_elapsed_seconds` computed. Local temp folder purged. Ephemeral Kaggle dataset deleted via API.
+
+---
+
+## 6. Dual Engine Architecture
+
+### 6.1. Local Engine Execution Harness
+Managed by `local_processor.py` and `dependency_manager.py`:
+- **Isolation Boundary**: Runs in a hermetic Python 3.11 environment in `%APPDATA%/EarPurifier/env` provisioned via micromamba.
+- **Hardware Routing**: Queries CUDA availability via Windows driver probe (`nvcuda.dll`) and `nvidia-smi -L` (3-second timeout). Selects PyTorch `cu121` on NVIDIA platforms or `cpu` wheels on non-GPU platforms.
+- **Subprocess Execution**:
+  - Sets `bufsize=1` and `stderr=subprocess.STDOUT` to eliminate OS pipe saturation deadlocks.
+  - Prepends isolated environment scripts and MinGW DLL paths to process `PATH`.
+  - Registers the `Popen` instance in `process_tracker`.
+- **Supported Local Model Weights**:
+  - Band-Split RoFormer: `model_bs_roformer_ep_317_sdr_12.9755.ckpt` (~1.8 GB)
+  - MDX23C: `MDX23C-8KFFT-InstVoc_HQ.ckpt` (~1.2 GB)
+  - Kim Vocal 2: `Kim_Vocal_2.onnx` (~215 MB)
+
+### 6.2. Cloud Engine & Kaggle Infrastructure
+Managed by `processor_thread.py`, `kaggle_bridge.py`, and `worker/worker.py`:
+- **Authentication**: Dynamically maps credentials. Tokens prefixed with `KGAT_` are mapped to `KAGGLE_API_TOKEN` (HTTP Bearer Auth); legacy tokens are mapped to `KAGGLE_KEY` (HTTP Basic Auth). Sets `KAGGLE_CONFIG_DIR` to a dummy path to prevent reading stale local config files.
+- **Ephemeral Dataset Architecture**: Each job uses an isolated dataset slug `earpurifier-audio-buffer-<uuid>` containing the 48kHz FLAC stem and `dataset-metadata.json`.
+- **Kernel Injection**: Modifies `worker/worker.py` in-memory using regex substitutions to bind target model filenames and expected audio stem identifiers before dispatching `api.kernels_push()`.
+- **4-Thread Chunked GCS Downloader**: Bypasses Kaggle SDK output methods. Retrieves direct Google Cloud Storage signed URLs via `ApiListKernelSessionOutputRequest`, determines file size via streaming GET, and downloads across 4 concurrent threads using `Range: bytes=X-Y` requests into `.part0` through `.part3` before sequential stitching.
+
+### 6.3. Master Cache Acceleration (`earpurifier-cloud-assets-v2`)
+- **Dataset Slug**: `verymuch/earpurifier-cloud-assets-v2` (mounted read-only under `/kaggle/input/`).
+- **Cache Contents**:
+  - `models/`: Static binary weights for RoFormer, MDX23C, and Kim Vocal 2.
+  - `wheels/`: Pre-compiled manylinux binary wheels for `audio-separator[gpu]`, `torch`, `onnxruntime-gpu<1.27.0`.
+- **Startup Latency**: Worker runs `pip install --no-index --find-links=.../wheels`, reducing environment setup from 45 seconds to **2 seconds**.
+- **Graceful Fallback**: If Kaggle updates its underlying Python runtime and offline wheel installations fail, `worker.py` catches `subprocess.CalledProcessError` and installs compatible packages from PyPI online.
+
+---
+
+## 7. Media Engine & Multi-Track Stream Preservation
+
+File: `media_engine.py`
+
+### 7.1. Container Probing & Stream Classification
+- **Duration Probe**: Invokes `ffprobe -v error -analyzeduration 1000000 -probesize 1000000 -show_entries format=duration -of csv=p=0` (180.0s timeout).
+- **Container Structure Probe**: Invokes `ffprobe -v error -analyzeduration 10000000 -probesize 10000000 -show_streams -show_format -of json` (180.0s timeout).
+- **Attached Picture Filtering**: Explicitly discards video streams where `disposition.attached_pic == 1` (e.g., embedded album art in MP3/FLAC), preventing audio files from being misidentified as videos.
+
+### 7.2. Lossless Audio Extraction
+- **Command Structure**:
+  `ffmpeg -y -i <input> -map 0:a:<index> -vn -c:a flac -ar 48000 -ac 2 <output.flac>`
+- **Downmix Invariant**: Enforces `-ac 2` (stereo) and `-ar 48000` (48 kHz) to match the fixed Short-Time Fourier Transform (STFT) tensor shapes required by neural separation networks.
+
+### 7.3. Duration Padding & Alignment
+- **Duration Drift Compensation**: AI separation models introduce small timing offsets (50–500 ms) due to STFT hop-length framing.
+- **Under-length Streams**: Appends `-af apad -t <target_duration>` to pad digital PCM silence to the exact millisecond.
+- **Over-length Streams**: Appends `-t <target_duration>` to truncate container boundary excess.
+- **Large File Protection**: Appends `-rf64 auto` when writing WAV containers to prevent corruption if files exceed 4 GiB.
+- **Zero-Duration Trap**: Traps `target_duration <= 0.0` to prevent destroying audio stems via empty truncations.
+
+### 7.4. OS Hardware Remuxing & Codec Selection
+
+#### Hardware Encoder Priority
+- **Windows (`win32`)**: `aac_mf` (Microsoft Media Foundation AAC encoder). Runs at **~1,500 fps** (~58x real-time).
+- **macOS (`darwin`)**: `aac_at` (Apple AudioToolbox AAC encoder). Runs at **~60x real-time**.
+- **Fallback**: Native built-in `aac`.
+
+#### Container Extension Routing Table
+| Extension Group | Audio Codec | Bitrate / Quality Flags | Video / Subtitle Strategy |
+| :--- | :--- | :--- | :--- |
+| `.mp4`, `.mov`, `.m4a` | `aac_mf` / `aac_at` / `aac` | `-b:a 256k` | `-map 0:v? -c:v copy`, `-map 0:s? -c:s copy` |
+| `.mkv`, `.mka`, `.flac` | `flac` | Lossless | `-map 0:v? -c:v copy`, `-map 0:s? -c:s copy` |
+| `.webm`, `.opus` | `libopus` | `-b:a 192k` | `-map 0:v? -c:v copy`, `-map 0:s? -c:s copy` |
+| `.ogg` | `libvorbis` | `-q:a 6` | `-map 0:v? -c:v copy` |
+| `.mp3` | `libmp3lame` | `-q:a 0` (V0 VBR) | Direct stream replacement |
+
+#### Non-Destructive Stream Mapping Rules
+```text
+-map 0:v? -c:v copy             # Losslessly copies all video streams
+-map 0:s? -c:s copy             # Losslessly copies all subtitle tracks
+-map 1:a:0 -c:a:<target> <enc>  # Replaces designated audio stream
+-map 0:a:<i> -c:a:<i> copy      # Retains all other audio tracks bit-for-bit
+-map_metadata 0                 # Preserves global container tags & chapters
+-avoid_negative_ts make_zero    # Eliminates initial timestamp desync
+-movflags +faststart            # Relocates moov atom for streaming optimization
+```
+
+---
+
+## 8. Security, DPAPI & State Persistence Schema
+
+### 8.1. Windows DPAPI Encryption Architecture
+File: `config_manager.py`
+- **Native Implementation**: Invokes `CryptProtectData` and `CryptUnprotectData` via `ctypes.windll.crypt32`.
+- **Entropy & Description**: Tagged with description string `"EarPurifierKey"`.
+- **Memory Safety**: Invokes `ctypes.windll.kernel32.LocalFree` on output data pointers immediately after reading byte arrays, preventing native Windows heap leaks.
+- **Prefix Format**: Encrypted strings are stored as Base64 with prefix:
+  `"enc:" + base64.b64encode(cipher_bytes).decode("ascii")`
+
+### 8.2. Configuration Schema (`config.json`)
+Stored at `%APPDATA%/EarPurifier/config.json`:
+```json
+{
+  "kaggle_username": "username_string",
+  "kaggle_api_key": "enc:AQAAANCMnd8BFdERjHoAwE...",
+  "output_folder": "C:\\Users\\User\\Desktop\\EarPurifier_Output",
+  "enable_logging": true,
+  "local_model": "SOTA (RoFormer) - Requires High-End GPU",
+  "processing_mode": "Cloud (Kaggle)",
+  "delete_output_files": false,
+  "language": "ar",
+  "check_updates": true,
+  "ignored_release_tag": "",
+  "last_update_check": "2026-10-31T12:00:00"
+}
+```
+
+### 8.3. Queue State Schema (`job_state.json`)
+Stored at `%APPDATA%/EarPurifier/job_state.json`:
+```json
+{
+  "jobs": {
+    "c8a1451b-4352-4911-b016-b51cfa8cfc65": {
+      "id": "c8a1451b-4352-4911-b016-b51cfa8cfc65",
+      "original_media": "C:\\Media\\Podcast.mp4",
+      "mode": "Cloud (Kaggle)",
+      "duration": 345.2,
+      "model": "Band-Split RoFormer (HQ Vocal/Instrumental)",
+      "selected_audio_stream": 0,
+      "probe_result": { ... },
+      "status": "COMPLETED",
+      "message": "Purification complete · Audio isolated",
+      "error_message": "",
+      "started_at": "2026-10-31T12:05:00+00:00",
+      "added_at": "2026-10-31T12:04:30+00:00",
+      "final_elapsed_seconds": 68,
+      "output_media": "C:\\Output\\Podcast_purified.mp4"
+    }
+  }
+}
+```
+
+### 8.4. Atomic File Replacement Mechanics
+All updates to `config.json` and `job_state.json` invoke `_atomic_write_json()`:
+1. Writes JSON payload to `tempfile.NamedTemporaryFile` in the target directory.
+2. Flushes application buffers (`f.flush()`).
+3. Enforces physical disk sync via `os.fsync(f.fileno())`.
+4. Closes file handle explicitly.
+5. Replaces target file via `os.replace()` in a 3-attempt loop with 50 ms sleep intervals to bypass transient Windows file locks.
+
+---
+
+## 9. Resiliency & Edge-Case Catalog
+
+| Problem / Edge Case | Root Cause | Engineered Remediation | Code Reference |
+| :--- | :--- | :--- | :--- |
+| **PyInstaller `tqdm` Crash** | Under `--windowed` / `--noconsole` builds, `sys.stderr` is `None`. Kaggle SDK `tqdm` calls crash with `AttributeError`. | Kaggle SDK dataset and kernel upload methods strictly pass `quiet=True` to disable `tqdm`. | `kaggle_bridge.py` |
+| **Kaggle `KGAT_` Bearer Auth** | New Personal Access Tokens starting with `KGAT_` fail with 401 when assigned to legacy `KAGGLE_KEY` (Basic Auth). | Inspects token prefix. If `KGAT_`, assigns to `KAGGLE_API_TOKEN` to force Bearer Auth; pops stale keys. | `kaggle_bridge.py` |
+| **GCS Signed URL Download Truncation** | Official `api.kernels_output()` truncates partially downloaded files to 0 bytes on `IncompleteRead` retries. | Intercepts direct GCS signed URLs; downloads chunks concurrently across 4 worker threads via HTTP `Range`. | `kaggle_bridge.py` |
+| **GCS `HEAD` Request 404** | Google Cloud Storage rejects HTTP `HEAD` verbs on Kaggle signed URLs with 404/403. | Queries `Content-Length` via an initial streaming `GET` request before dispatching range threads. | `kaggle_bridge.py` |
+| **Silent Cloud GPU $\to$ CPU Fallback** | Dynamic linking errors in ONNX Runtime can cause silent fallback to CPU, burning 25 mins of quota. | Inspects active inference session (`model_run.get_providers()`). Aborts with `RuntimeError` within 5s if CUDA missing. | `worker/worker.py` |
+| **Deadlock on Child Process Pipes** | Unbuffered separate pipes (`stdout`/`stderr`) saturate Windows 64 KB kernel pipe buffers. | Binds `stderr=subprocess.STDOUT` with `bufsize=1` for unified, line-buffered stream draining. | `local_processor.py` |
+| **Orphaned Background Workers** | `proc.kill()` on Windows leaves underlying worker processes running in memory. | Executes `taskkill /F /T /PID <pid>` to annihilate the entire process tree down to child leaves. | `process_tracker.py` |
+| **Zero-Duration Audio Destruction** | Corrupt container headers returning `0.0` duration cause `ffmpeg -t 0` to create empty files. | Traps `target_duration <= 0.0` and falls back to a passthrough file copy without trimming. | `media_engine.py` |
+| **Attached Picture Remux False Positives** | Audio files with embedded album art have video streams flagged with `disposition.attached_pic == 1`. | Probing filters out attached picture streams from the video list, treating the file as pure audio. | `media_engine.py` |
+| **Windows Title Bar Theme Mismatch** | Dark theme in Qt doesn't automatically theme the OS window frame on Windows 10/11. | Calls native DWM API `DwmSetWindowAttribute` with `DWMWA_USE_IMMERSIVE_DARK_MODE` (attribute 20 / 19). | `ui/theme.py` |
+| **Single-Instance Deadlocks** | Second instance attempts to initialize resources or corrupt state files. | Handshake via `QLocalSocket` activates existing instance window and immediately terminates second process via `os._exit(0)`. | `main.py` |
+
+---
+
+## 10. Cross-Document References
+
+- For mandatory development invariants, non-negotiable coding rules, and severity levels, see [`BINDING_RULES.md`](BINDING_RULES.md).
+- For operational runbooks, building standalone executables, publishing GitHub releases, and Kaggle cache maintenance, see [`OPERATIONS.md`](OPERATIONS.md).
+- For high-level product identity, feature highlights, and build commands, see [`README.md`](../README.md).
