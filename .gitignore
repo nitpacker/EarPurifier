@@ -27,6 +27,8 @@ Thumbs.db
 
 # Environment variables & secrets
 .env
+.test_env/
+.test_appdata/
 master_builder/builder.py
 
 

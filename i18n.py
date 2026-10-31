@@ -45,14 +45,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_add_media": "＋ إضافة وسائط",
         "btn_download_model": "⬇ تنزيل النموذج ({size})",
         "btn_downloading_model": "⬇ جاري التنزيل...",
-        "btn_select_mode": "تحديد للحذف",
+        "btn_select_mode": "تحديد",
         "btn_exit_selection": "إلغاء التحديد",
-        "btn_clear_history": "مسح السجل",
-        "filter_label": "تصفية:",
+        "btn_clear_history": "مسح",
+        "btn_open_output_folder": "📁 فتح مجلد الإخراج",
+        "filter_label": "العرض:",
         "filter_all_jobs": "كافة المهام ({count})",
         "filter_in_progress": "قيد التنفيذ ({count})",
         "filter_completed": "المكتملة ({count})",
-        "mariam_initiative": "🌱 من مبادرة مريم",
+        "mariam_initiative": "🌱 من مبادرة مريم ↗",
 
         # Batch Action Bar
         "btn_select_all": "تحديد الكل",
@@ -69,14 +70,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
 
         # Job Card Widgets
         "badge_queued": "في الانتظار",
-        "badge_running": "قيد التنفيذ",
-        "badge_completed": "مكتمل",
-        "badge_aborted": "تم الإلغاء",
-        "badge_failed": "فشل",
+        "badge_running": "● قيد التنفيذ",
+        "badge_completed": "✓ مكتمل",
+        "badge_aborted": "■ تم الإلغاء",
+        "badge_failed": "✕ فشل",
         "tag_mode_cloud": "سحابي",
         "tag_mode_local": "محلي",
         "btn_abort": "⏹ إلغاء",
         "btn_remove_tooltip": "إزالة من السجل",
+        "btn_show_in_folder": "عرض في المجلد",
+        "label_elapsed": "المنقضي:",
+        "meta_saved_to_output": "تم الحفظ في المجلد",
         "time_m": "د",
         "time_s": "ث",
         "time_ms_format": "{mins} د {secs} ث",
@@ -179,6 +183,22 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "alert_download_failed_msg": "تعذر تنزيل نموذج الذكاء الاصطناعي:\n{message}",
         "unexpected_error_title": "خطأ غير متوقع - EarPurifier",
         "unexpected_error_msg": "حدث خطأ غير متوقع:\n\n{exc}\n\nيرجى مراجعة سجل التطبيق لمعرفة التفاصيل.",
+
+        # Overhaul Studio Additions
+        "theme_toggle_light": "التبديل إلى الوضع الفاتح",
+        "theme_toggle_dark": "التبديل إلى الوضع الداكن",
+        "btn_show_in_folder": "عرض في المجلد",
+        "engine_telemetry_ready": "جاهز",
+        "engine_telemetry_active": "نشط",
+        "dropzone_title": "اسحب وأفلت ملفات الوسائط هنا",
+        "dropzone_desc": "يدعم استيراد ملفات الفيديو والصوت لعزل الصوت البشري بدقة عالية",
+        "dropzone_more_formats": "+ وغيرها الكثير!",
+        "tab_all": "الكل",
+        "tab_in_progress": "قيد التنفيذ",
+        "tab_completed": "المكتملة",
+        "track_active_badge": "محدد",
+        "batch_dock_selected": "{count} محدد",
+        "batch_dock_selected_zero": "لم يتم تحديد أي عنصر",
     },
 
     "en": {
@@ -206,14 +226,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_add_media": "＋ Add Media",
         "btn_download_model": "⬇ Download Model ({size})",
         "btn_downloading_model": "⬇ Downloading...",
-        "btn_select_mode": "Select to Delete",
-        "btn_exit_selection": "Exit Selection",
-        "btn_clear_history": "Clear History",
-        "filter_label": "Filter:",
+        "btn_select_mode": "Select",
+        "btn_exit_selection": "Exit",
+        "btn_clear_history": "Clear",
+        "btn_open_output_folder": "📁 Open Output Folder",
+        "filter_label": "View:",
         "filter_all_jobs": "All Jobs ({count})",
         "filter_in_progress": "In Progress ({count})",
         "filter_completed": "Completed ({count})",
-        "mariam_initiative": "🌱 From Mariam Initiative",
+        "mariam_initiative": "🌱 From Mariam Initiative ↗",
 
         # Batch Action Bar
         "btn_select_all": "Select All",
@@ -230,14 +251,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
 
         # Job Card Widgets
         "badge_queued": "QUEUED",
-        "badge_running": "IN PROGRESS",
-        "badge_completed": "COMPLETED",
-        "badge_aborted": "ABORTED",
-        "badge_failed": "FAILED",
+        "badge_running": "● RUNNING",
+        "badge_completed": "✓ COMPLETED",
+        "badge_aborted": "■ ABORTED",
+        "badge_failed": "✕ FAILED",
         "tag_mode_cloud": "Cloud",
         "tag_mode_local": "Local",
         "btn_abort": "⏹ Abort",
         "btn_remove_tooltip": "Remove from history",
+        "btn_show_in_folder": "Show in Folder",
+        "label_elapsed": "Elapsed:",
+        "meta_saved_to_output": "Saved to Output",
         "time_m": "m",
         "time_s": "s",
         "time_ms_format": "{mins}m {secs}s",
@@ -340,6 +364,22 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "alert_download_failed_msg": "Failed to download AI model:\n{message}",
         "unexpected_error_title": "Unexpected Error - EarPurifier",
         "unexpected_error_msg": "An unexpected error occurred:\n\n{exc}\n\nPlease check the application log for details.",
+
+        # Overhaul Studio Additions
+        "theme_toggle_light": "Switch to Light Mode",
+        "theme_toggle_dark": "Switch to Dark Mode",
+        "btn_show_in_folder": "Show in Folder",
+        "engine_telemetry_ready": "READY",
+        "engine_telemetry_active": "ACTIVE",
+        "dropzone_title": "Drag and Drop Media Files Here",
+        "dropzone_desc": "Import audio or video files to isolate clear vocal stems with AI precision",
+        "dropzone_more_formats": "+ and much more!",
+        "tab_all": "All",
+        "tab_in_progress": "In Progress",
+        "tab_completed": "Completed",
+        "track_active_badge": "Active",
+        "batch_dock_selected": "{count} selected",
+        "batch_dock_selected_zero": "0 items selected",
     }
 }
 
@@ -466,7 +506,7 @@ def format_delete_confirm_msg(count: int, lang: Optional[str] = None) -> str:
 def translate_worker_message(msg: str) -> str:
     """
     Translates known background worker logs and status updates for the UI
-    while preserving raw dynamic data safely.
+    while preserving clean, localized descriptive messages in Arabic and English.
     """
     if not msg:
         return ""
@@ -480,6 +520,28 @@ def translate_worker_message(msg: str) -> str:
         pct_part = msg.replace("Processing audio...", "").replace("%", "").strip()
         if pct_part.isdigit():
             return t("msg_processing_audio_pct", pct=pct_part)
+
+    # Kaggle background kernel polling messages
+    msg_lower = msg.lower()
+    if "polling" in msg_lower or "kaggle status" in msg_lower:
+        if "queued" in msg_lower:
+            return t("msg_waiting_kaggle_gpu")
+        elif "complete" in msg_lower:
+            return t("msg_downloading_kaggle")
+        else:
+            return t("msg_isolating_vocals")
+
+    # Local model initialization & audio processing
+    if msg.startswith("Model ") and "Processing audio" in msg:
+        return t("msg_processing_audio")
+
+    # Cancellation / Cleanup in progress
+    if "aborting:" in msg_lower or "cancelling kaggle kernel" in msg_lower:
+        return t("msg_job_aborted")
+
+    # Network retries
+    if "interrupted" in msg_lower and "retrying" in msg_lower:
+        return t("msg_waiting_kaggle_gpu")
 
     # Return original message if no match found
     return msg

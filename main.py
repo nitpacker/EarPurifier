@@ -56,7 +56,15 @@ sys.excepthook = handle_uncaught_exception
 
 # ─── Main Application Bootstrap ───────────────────────────────────────────────
 def main():
-    # ── High-DPI Display Attributes ──
+    # ── High-DPI Display Attributes & Per-Monitor DPI Awareness ──
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
     if hasattr(Qt, "AA_EnableHighDpiScaling"):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     if hasattr(Qt, "AA_UseHighDpiPixmaps"):

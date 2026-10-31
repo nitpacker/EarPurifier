@@ -1,18 +1,17 @@
 import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QComboBox, QCheckBox, QGroupBox, QFormLayout,
-    QFileDialog, QListWidget, QListWidgetItem, QApplication
+    QLineEdit, QComboBox, QCheckBox, QFormLayout, QFrame,
+    QFileDialog, QListWidget, QListWidgetItem
 )
 from PySide6.QtCore import Qt
 
 from .theme import (
-    TEXT_HEAD, TEXT_BODY, TEXT_MUTED, TEXT_FAINT,
-    CARD_BORDER, CARD_BORDER_HOVER,
-    ACCENT_EMERALD, ACCENT_MINT, ACCENT_TEAL, ACCENT_RED,
-    get_combobox_qss, get_groupbox_qss
+    Theme, ThemeMode,
+    get_combobox_qss, get_checkbox_qss, get_primary_button_qss,
+    FONT_FAMILY, FONT_MONO
 )
-from .components import VectorAlertBadge
+from .components import VectorAlertBadge, ModernToggleSwitch
 
 try:
     from config_manager import ConfigManager
@@ -25,83 +24,89 @@ except ImportError:
     from src.i18n import t, is_rtl, format_delete_confirm_msg
 
 
-# ─── Settings Dialog ─────────────────────────────────────────────────────────
+# ─── Settings Dialog (Modern Elevated Studio Cards) ───────────────────────────
 
 class SettingsDialog(QDialog):
     def __init__(self, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle(t("settings_window_title"))
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(500)
+        self._theme_mode = Theme.get_mode()
 
         current_lang = self.config.get("language", "ar")
         rtl_mode = is_rtl(current_lang)
 
-        # Set direction of the dialog explicitly
         self.setLayoutDirection(Qt.RightToLeft if rtl_mode else Qt.LeftToRight)
         self.apply_dialog_style(rtl_mode)
         self.init_ui(current_lang)
 
     def apply_dialog_style(self, rtl_mode: bool):
+        mode = self._theme_mode
+        canvas_bg = Theme.get_token("CANVAS_BG", mode)
+        card_bg = Theme.get_token("CARD_BG", mode)
+        card_border = Theme.get_token("CARD_BORDER", mode)
+        text_head = Theme.get_token("TEXT_HEAD", mode)
+        text_body = Theme.get_token("TEXT_BODY", mode)
+        meta_bg = Theme.get_token("META_BG", mode)
+        accent = Theme.get_token("ACCENT_EMERALD", mode)
+
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: #ffffff;
+                background-color: {canvas_bg};
             }}
-            {get_groupbox_qss(rtl_mode)}
             QLabel {{
-                color: {TEXT_BODY};
+                color: {text_body};
                 font-size: 12px;
                 font-weight: 600;
                 background: transparent;
             }}
             QLineEdit {{
-                background-color: #f7faf8;
-                border: 1px solid {CARD_BORDER};
-                border-radius: 6px;
-                padding: 8px 12px;
-                color: {TEXT_HEAD};
-                font-size: 13px;
+                background-color: {meta_bg};
+                border: 1px solid {card_border};
+                border-radius: 7px;
+                padding: 7px 10px;
+                color: {text_head};
+                font-size: 12.5px;
             }}
             QLineEdit:focus {{
-                border-color: {ACCENT_EMERALD};
-                background-color: #ffffff;
+                border-color: {accent};
             }}
-            QCheckBox {{
-                color: {TEXT_HEAD};
-                font-size: 12px;
-                font-weight: 600;
-                spacing: 8px;
-                background: transparent;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border: 1px solid {CARD_BORDER};
-                border-radius: 4px;
-                background: #f7faf8;
-            }}
-            QCheckBox::indicator:checked {{
-                background: {ACCENT_EMERALD};
-                border-color: {ACCENT_EMERALD};
+            QFrame#elevatedCard {{
+                background-color: {card_bg};
+                border: 1px solid {card_border};
+                border-radius: 12px;
             }}
         """)
 
     def init_ui(self, current_lang: str):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(14)
+        layout.setContentsMargins(20, 18, 20, 18)
 
+        # Header Title
         title_box = QHBoxLayout()
+        title_box.setSpacing(8)
+
         self.lbl_title = QLabel(t("settings_header"))
-        self.lbl_title.setStyleSheet(f"font-size: 18px; font-weight: 800; color: {TEXT_HEAD}; background: transparent;")
+        self.lbl_title.setStyleSheet(f"font-size: 16px; font-weight: 800; color: {Theme.get_token('TEXT_HEAD')};")
         title_box.addWidget(self.lbl_title)
+        title_box.addStretch()
         layout.addLayout(title_box)
 
-        # ── Kaggle Credentials Group ──
-        self.grp_kaggle = QGroupBox(t("settings_grp_kaggle"))
-        self.form_kaggle = QFormLayout()
-        self.form_kaggle.setSpacing(10)
-        self.form_kaggle.setContentsMargins(14, 16, 14, 14)
+        # ── Card 1: Kaggle Cloud Accelerator ──
+        self.card_kaggle = QFrame()
+        self.card_kaggle.setObjectName("elevatedCard")
+        ck_layout = QVBoxLayout(self.card_kaggle)
+        ck_layout.setContentsMargins(14, 12, 14, 12)
+        ck_layout.setSpacing(10)
+
+        lbl_k_head = QLabel(t("settings_grp_kaggle"))
+        lbl_k_head.setStyleSheet(f"font-size: 12px; font-weight: 800; color: {Theme.get_token('ACCENT_EMERALD')};")
+        ck_layout.addWidget(lbl_k_head)
+
+        form_kaggle = QFormLayout()
+        form_kaggle.setSpacing(8)
 
         self.inp_user = QLineEdit(self.config.get("kaggle_username"))
         self.inp_user.setPlaceholderText(t("settings_kaggle_user_ph"))
@@ -109,17 +114,24 @@ class SettingsDialog(QDialog):
         self.inp_key.setEchoMode(QLineEdit.Password)
         self.inp_key.setPlaceholderText("••••••••••••••••")
 
-        self.lbl_user = QLabel(t("settings_kaggle_user"))
-        self.lbl_key = QLabel(t("settings_kaggle_key"))
-        self.form_kaggle.addRow(self.lbl_user, self.inp_user)
-        self.form_kaggle.addRow(self.lbl_key, self.inp_key)
-        self.grp_kaggle.setLayout(self.form_kaggle)
+        form_kaggle.addRow(t("settings_kaggle_user"), self.inp_user)
+        form_kaggle.addRow(t("settings_kaggle_key"), self.inp_key)
+        ck_layout.addLayout(form_kaggle)
+        layout.addWidget(self.card_kaggle)
 
-        # ── General & Engine Group ──
-        self.grp_general = QGroupBox(t("settings_grp_general"))
-        self.form_general = QFormLayout()
-        self.form_general.setSpacing(10)
-        self.form_general.setContentsMargins(14, 16, 14, 14)
+        # ── Card 2: General & Engine Settings ──
+        self.card_general = QFrame()
+        self.card_general.setObjectName("elevatedCard")
+        cg_layout = QVBoxLayout(self.card_general)
+        cg_layout.setContentsMargins(14, 12, 14, 12)
+        cg_layout.setSpacing(10)
+
+        lbl_g_head = QLabel(t("settings_grp_general"))
+        lbl_g_head.setStyleSheet(f"font-size: 12px; font-weight: 800; color: {Theme.get_token('ACCENT_EMERALD')};")
+        cg_layout.addWidget(lbl_g_head)
+
+        form_general = QFormLayout()
+        form_general.setSpacing(8)
 
         # Language Selector
         self.cmb_lang = QComboBox()
@@ -127,40 +139,36 @@ class SettingsDialog(QDialog):
         self.cmb_lang.addItem("English", "en")
         idx = 0 if current_lang == "ar" else 1
         self.cmb_lang.setCurrentIndex(idx)
-        self.cmb_lang.setStyleSheet(get_combobox_qss(is_rtl(current_lang)))
-
-        self.lbl_lang = QLabel(t("settings_language"))
-        self.form_general.addRow(self.lbl_lang, self.cmb_lang)
+        self.cmb_lang.setStyleSheet(get_combobox_qss(is_rtl(current_lang), self._theme_mode))
+        form_general.addRow(t("settings_language"), self.cmb_lang)
 
         # Output Folder
         out_layout = QHBoxLayout()
-        out_layout.setSpacing(8)
+        out_layout.setSpacing(6)
         self.inp_out = QLineEdit(self.config.get("output_folder"))
         self.inp_out.setPlaceholderText(t("settings_out_folder_ph"))
         self.btn_browse = QPushButton(t("settings_btn_browse"))
         self.btn_browse.setCursor(Qt.PointingHandCursor)
         self.btn_browse.setStyleSheet(f"""
             QPushButton {{
-                background-color: #edf5f0;
-                color: {TEXT_BODY};
-                border: 1px solid {CARD_BORDER};
-                padding: 7px 14px;
+                background-color: {Theme.get_token('CARD_BG')};
+                color: {Theme.get_token('TEXT_BODY')};
+                border: 1px solid {Theme.get_token('CARD_BORDER')};
+                padding: 6px 12px;
                 border-radius: 6px;
                 font-weight: 600;
-                font-size: 12px;
+                font-size: 11.5px;
             }}
             QPushButton:hover {{
-                border-color: {ACCENT_EMERALD};
-                color: {ACCENT_EMERALD};
+                border-color: {Theme.get_token('ACCENT_EMERALD')};
             }}
         """)
         self.btn_browse.clicked.connect(self.browse_output)
-        out_layout.addWidget(self.inp_out)
+        out_layout.addWidget(self.inp_out, 1)
         out_layout.addWidget(self.btn_browse)
-        self.lbl_out = QLabel(t("settings_out_folder"))
-        self.form_general.addRow(self.lbl_out, out_layout)
+        form_general.addRow(t("settings_out_folder"), out_layout)
 
-        # Local AI Model (Model names strictly preserved in English)
+        # Local AI Model
         self.cmb_model = QComboBox()
         self.cmb_model.addItems([
             "SOTA (RoFormer) - Requires High-End GPU",
@@ -168,39 +176,25 @@ class SettingsDialog(QDialog):
             "Low (MDXNET) - Fast & Low VRAM"
         ])
         self.cmb_model.setCurrentText(self.config.get("local_model"))
-        self.cmb_model.setStyleSheet(get_combobox_qss(is_rtl(current_lang)))
-        self.lbl_model = QLabel(t("settings_local_model"))
-        self.form_general.addRow(self.lbl_model, self.cmb_model)
+        self.cmb_model.setStyleSheet(get_combobox_qss(is_rtl(current_lang), self._theme_mode))
+        form_general.addRow(t("settings_local_model"), self.cmb_model)
 
-        self.chk_logging = QCheckBox(t("settings_enable_logging"))
-        self.chk_logging.setChecked(self.config.get("enable_logging", True))
-        self.form_general.addRow("", self.chk_logging)
-        self.grp_general.setLayout(self.form_general)
+        # Modern iOS Toggle Switch for Logging
+        log_row = QHBoxLayout()
+        lbl_log = QLabel(t("settings_enable_logging"))
+        self.switch_logging = ModernToggleSwitch(self.config.get("enable_logging", True))
+        log_row.addWidget(lbl_log, 1)
+        log_row.addWidget(self.switch_logging)
+        form_general.addRow("", log_row)
+
+        cg_layout.addLayout(form_general)
+        layout.addWidget(self.card_general)
 
         # Save Button
         self.btn_save = QPushButton(t("settings_btn_save"))
         self.btn_save.setCursor(Qt.PointingHandCursor)
-        self.btn_save.setStyleSheet(f"""
-            QPushButton {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {ACCENT_EMERALD}, stop:1 {ACCENT_TEAL});
-                color: #ffffff;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 10px 0px;
-                border: none;
-                border-radius: 8px;
-            }}
-            QPushButton:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {ACCENT_MINT}, stop:1 #0f766e);
-            }}
-        """)
+        self.btn_save.setStyleSheet(get_primary_button_qss(self._theme_mode))
         self.btn_save.clicked.connect(self.accept)
-
-        layout.addWidget(self.grp_kaggle)
-        layout.addWidget(self.grp_general)
-        layout.addSpacing(6)
         layout.addWidget(self.btn_save)
 
     def browse_output(self):
@@ -213,86 +207,87 @@ class SettingsDialog(QDialog):
         self.config.set("kaggle_api_key", self.inp_key.text().strip())
         self.config.set("output_folder", self.inp_out.text().strip())
         self.config.set("local_model", self.cmb_model.currentText())
-        self.config.set("enable_logging", self.chk_logging.isChecked())
+        self.config.set("enable_logging", self.switch_logging.isChecked())
         self.config.set("language", self.cmb_lang.currentData())
         return True
 
 
-# ─── Delete Confirmation Dialog (CLEAN, NO HIGHLIGHT, NO TRASH CONCEPT) ──────
+# ─── Delete Confirmation Dialog (Fixed Checkbox + Vector Badge) ───────────────
 
 class DeleteConfirmDialog(QDialog):
     def __init__(self, count: int, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle(t("delete_dialog_title"))
-        self.setMinimumWidth(430)
+        self.setMinimumWidth(410)
+        self._theme_mode = Theme.get_mode()
+
+        mode = self._theme_mode
+        card_bg = Theme.get_token("CARD_BG", mode)
+        text_head = Theme.get_token("TEXT_HEAD", mode)
+        text_muted = Theme.get_token("TEXT_MUTED", mode)
+        meta_bg = Theme.get_token("META_BG", mode)
+        card_border = Theme.get_token("CARD_BORDER", mode)
+
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: #ffffff;
+                background-color: {card_bg};
                 border-radius: 12px;
             }}
             QLabel {{
-                color: {TEXT_HEAD};
+                color: {text_head};
                 background: transparent;
-                border: none;
             }}
-            QCheckBox {{
-                color: {TEXT_HEAD};
-                font-size: 13px;
-                font-weight: 600;
-                spacing: 8px;
-                background: transparent;
-                border: none;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border: 1px solid {CARD_BORDER};
-                border-radius: 4px;
-                background: #f7faf8;
-            }}
-            QCheckBox::indicator:checked {{
-                background: {ACCENT_RED};
-                border-color: {ACCENT_RED};
-            }}
+            {get_checkbox_qss(self._theme_mode, accent_color='#ef4444')}
         """)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(14)
-        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 18, 20, 18)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(14)
+        top_row.setSpacing(12)
         badge = VectorAlertBadge()
         top_row.addWidget(badge)
 
         msg_box = QVBoxLayout()
-        msg_box.setSpacing(3)
+        msg_box.setSpacing(2)
         msg = format_delete_confirm_msg(count)
         lbl_msg = QLabel(msg)
-        lbl_msg.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {TEXT_HEAD}; background: transparent; border: none;")
+        lbl_msg.setStyleSheet(f"font-size: 14.5px; font-weight: 800; color: {text_head}; background: transparent;")
         msg_box.addWidget(lbl_msg)
 
         lbl_desc = QLabel(t("delete_confirm_desc"))
-        lbl_desc.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px; background: transparent; border: none;")
+        lbl_desc.setStyleSheet(f"color: {text_muted}; font-size: 11.5px; background: transparent;")
         msg_box.addWidget(lbl_desc)
-        top_row.addLayout(msg_box)
-        top_row.addStretch()
+        top_row.addLayout(msg_box, 1)
         layout.addLayout(top_row)
 
-        layout.addSpacing(4)
+        # Checkbox with crisp white SVG checkmark & 1.5px border
+        chk_box = QFrame()
+        chk_box.setObjectName("chkCardFrame")
+        chk_box.setStyleSheet(f"""
+            QFrame#chkCardFrame {{
+                background-color: {meta_bg};
+                border: 1px solid {card_border};
+                border-radius: 8px;
+            }}
+        """)
+        cb_layout = QVBoxLayout(chk_box)
+        cb_layout.setContentsMargins(10, 8, 10, 8)
+        cb_layout.setSpacing(4)
 
         self.chk_delete_files = QCheckBox(t("delete_output_files_chk"))
         self.chk_delete_files.setToolTip(t("delete_output_files_tip"))
         self.chk_delete_files.setChecked(self.config.get("delete_output_files", False))
-        layout.addWidget(self.chk_delete_files)
+        cb_layout.addWidget(self.chk_delete_files)
 
         lbl_note = QLabel(t("delete_output_files_note"))
-        lbl_note.setStyleSheet(f"color: {TEXT_FAINT}; font-size: 11px; background: transparent; border: none;")
-        layout.addWidget(lbl_note)
+        lbl_note.setStyleSheet(f"color: {text_muted}; font-size: 10.5px; background: transparent;")
+        cb_layout.addWidget(lbl_note)
+        layout.addWidget(chk_box)
 
-        layout.addSpacing(6)
-
+        # Action Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -300,32 +295,31 @@ class DeleteConfirmDialog(QDialog):
         btn_cancel.setCursor(Qt.PointingHandCursor)
         btn_cancel.setStyleSheet(f"""
             QPushButton {{
-                background-color: #edf5f0;
-                color: {TEXT_BODY};
-                border: 1px solid {CARD_BORDER};
-                padding: 8px 18px;
+                background-color: {meta_bg};
+                color: {Theme.get_token('TEXT_BODY')};
+                border: 1px solid {card_border};
+                padding: 7px 16px;
                 border-radius: 6px;
                 font-weight: 600;
-                font-size: 13px;
+                font-size: 12px;
             }}
             QPushButton:hover {{
-                border-color: {CARD_BORDER_HOVER};
-                color: {TEXT_HEAD};
+                border-color: {Theme.get_token('CARD_BORDER_HOVER')};
             }}
         """)
         btn_cancel.clicked.connect(self.reject)
 
         btn_delete = QPushButton(t("btn_remove"))
         btn_delete.setCursor(Qt.PointingHandCursor)
-        btn_delete.setStyleSheet(f"""
+        btn_delete.setStyleSheet("""
             QPushButton {{
-                background-color: {ACCENT_RED};
+                background-color: #ef4444;
                 color: #ffffff;
                 font-weight: 700;
-                padding: 8px 22px;
+                padding: 7px 18px;
                 border-radius: 6px;
                 border: none;
-                font-size: 13px;
+                font-size: 12px;
             }}
             QPushButton:hover {{
                 background-color: #dc2626;
@@ -345,66 +339,74 @@ class DeleteConfirmDialog(QDialog):
         return self.chk_delete_files.isChecked()
 
 
-# ─── Audio Track Selection Dialog ─────────────────────────────────────────────
+# ─── Audio Track Selection Dialog (Channel-Strip Cards) ────────────────────────
 
 class AudioTrackSelectDialog(QDialog):
-    """
-    Clean, styled PySide6 dialog for selecting an audio track from a multi-audio container.
-    """
+    """Modern channel-strip card selector for multi-audio containers."""
     def __init__(self, audio_streams: list, file_name: str, parent=None):
         super().__init__(parent)
         self.audio_streams = audio_streams
         self.chosen_index = 0
         self.setWindowTitle(t("track_dialog_title"))
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(480)
+        self._theme_mode = Theme.get_mode()
+
+        mode = self._theme_mode
+        card_bg = Theme.get_token("CARD_BG", mode)
+        card_border = Theme.get_token("CARD_BORDER", mode)
+        meta_bg = Theme.get_token("META_BG", mode)
+        text_head = Theme.get_token("TEXT_HEAD", mode)
+        text_muted = Theme.get_token("TEXT_MUTED", mode)
+        accent = Theme.get_token("ACCENT_EMERALD", mode)
+
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: #ffffff;
+                background-color: {card_bg};
                 border-radius: 12px;
             }}
             QLabel {{
-                color: {TEXT_HEAD};
+                color: {text_head};
                 background: transparent;
             }}
         """)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(14)
-        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 18, 20, 18)
 
-        # Header Title
         lbl_title = QLabel(t("track_dialog_header"))
-        lbl_title.setStyleSheet(f"font-size: 16px; font-weight: 800; color: {TEXT_HEAD};")
+        lbl_title.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {text_head};")
         layout.addWidget(lbl_title)
 
         lbl_file = QLabel(t("track_dialog_file", file_name=file_name))
-        lbl_file.setStyleSheet(f"font-size: 12px; color: {TEXT_MUTED}; font-weight: 500;")
+        lbl_file.setStyleSheet(f"font-size: 11.5px; color: {text_muted};")
         lbl_file.setWordWrap(True)
         layout.addWidget(lbl_file)
 
         lbl_desc = QLabel(t("track_dialog_desc"))
-        lbl_desc.setStyleSheet(f"font-size: 13px; color: {TEXT_BODY}; font-weight: 600;")
+        lbl_desc.setStyleSheet(f"font-size: 12px; color: {text_head}; font-weight: 600;")
         layout.addWidget(lbl_desc)
 
-        # Track list widget
+        # Track list widget styled as channel strips
         self.track_list = QListWidget()
         self.track_list.setStyleSheet(f"""
             QListWidget {{
-                background-color: #f7faf8;
-                border: 1px solid {CARD_BORDER};
+                background-color: {meta_bg};
+                border: 1px solid {card_border};
                 border-radius: 8px;
                 outline: 0px;
-                padding: 6px;
+                padding: 4px;
             }}
             QListWidget::item {{
-                padding: 10px 12px;
+                padding: 8px 10px;
                 border-radius: 6px;
-                font-size: 12.5px;
-                color: {TEXT_HEAD};
+                font-size: 12px;
+                color: {text_head};
+                margin-bottom: 2px;
             }}
             QListWidget::item:selected {{
                 background-color: rgba(16, 185, 129, 0.16);
-                color: {TEXT_HEAD};
+                border: 1.5px solid {accent};
                 font-weight: 700;
             }}
             QListWidget::item:hover {{
@@ -416,18 +418,12 @@ class AudioTrackSelectDialog(QDialog):
         for i, stream in enumerate(audio_streams):
             lang = stream.get("tags", {}).get("language", "") or "und"
             title = stream.get("tags", {}).get("title", "") or ""
-            codec = stream.get("codec_name", "unknown")
-            channels = stream.get("channels", 0)
+            codec = stream.get("codec_name", "unknown").upper()
+            channels = stream.get("channels", 2)
+            ch_str = "Stereo" if channels == 2 else ("5.1 Surround" if channels == 6 else f"{channels} Ch")
 
-            title_part = f" ({title})" if title else ""
-            item_text = t(
-                "track_item_format",
-                num=i + 1,
-                lang=lang.upper(),
-                title=title_part,
-                codec=codec,
-                channels=channels
-            )
+            title_part = f" · {title}" if title else ""
+            item_text = f"#{i + 1}  [{lang.upper()}]  {codec}  ·  {ch_str}{title_part}"
             item = QListWidgetItem(item_text)
             self.track_list.addItem(item)
 
@@ -442,17 +438,13 @@ class AudioTrackSelectDialog(QDialog):
         btn_cancel.setCursor(Qt.PointingHandCursor)
         btn_cancel.setStyleSheet(f"""
             QPushButton {{
-                background-color: #edf5f0;
-                color: {TEXT_BODY};
-                border: 1px solid {CARD_BORDER};
-                padding: 8px 18px;
+                background-color: {meta_bg};
+                color: {Theme.get_token('TEXT_BODY')};
+                border: 1px solid {card_border};
+                padding: 7px 16px;
                 border-radius: 6px;
                 font-weight: 600;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{
-                border-color: {CARD_BORDER_HOVER};
-                color: {TEXT_HEAD};
+                font-size: 12px;
             }}
         """)
         btn_cancel.clicked.connect(self.reject)
@@ -460,22 +452,7 @@ class AudioTrackSelectDialog(QDialog):
 
         btn_select = QPushButton(t("btn_select_track"))
         btn_select.setCursor(Qt.PointingHandCursor)
-        btn_select.setStyleSheet(f"""
-            QPushButton {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {ACCENT_EMERALD}, stop:1 {ACCENT_TEAL});
-                color: #ffffff;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 8px 22px;
-                border: none;
-                border-radius: 6px;
-            }}
-            QPushButton:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {ACCENT_MINT}, stop:1 #0f766e);
-            }}
-        """)
+        btn_select.setStyleSheet(get_primary_button_qss(self._theme_mode))
         btn_select.clicked.connect(self._on_select)
         btn_layout.addWidget(btn_select)
 
