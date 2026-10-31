@@ -56,6 +56,7 @@ def main():
         "--add-data", f"{worker_dir}{os.pathsep}src/worker",
         "--hidden-import", "loguru",
         "--hidden-import", "PySide6",
+        "--hidden-import", "ui",
         "--hidden-import", "text_unidecode",
         main_script
     ]
