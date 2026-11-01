@@ -2,11 +2,11 @@
   "version": "0.0.2",
   "release_date": "2026-11-1",
   "download_urls": {
-    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.exe",
-    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier_mac.dmg",
-    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.AppImage"
+    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2.exe",
+    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2_mac.dmg",
+    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2.AppImage"
   },
-  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.exe",
+  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2.exe",
   "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.2",
   "message": {
     "ar": "🎉 تحديث هدوء v0.0.2:\n• تسريع وتخفيف حجم المحرك المحلي.\n• تحسينات على آلية حساب الوقت المتبقي (ETA) وشريط التقدم في المعالجة المحلية.\n• تحسينات في واجهة المستخدم والرسائل التوضيحية.",
