@@ -1,15 +1,15 @@
 {
-  "version": "0.0.1",
-  "release_date": "2026-10-31",
+  "version": "0.0.2",
+  "release_date": "2026-11-1",
   "download_urls": {
-    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.1/EarPurifier.exe",
-    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.1/EarPurifier_mac.dmg",
-    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.1/EarPurifier.AppImage"
+    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.exe",
+    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier_mac.dmg",
+    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.AppImage"
   },
-  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.1/EarPurifier.exe",
-  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.1",
+  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.exe",
+  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.2",
   "message": {
-    "ar": "🎉 الإصدار التجريبي من EarPurifier:\n• عزل وتنقية الصوت البشري بالذكاء الاصطناعي بدقة فائقة.\n• معالجة سحابية فائقة السرعة على خوادم Kaggle T4 ومعالجة محلية كاملة.\n• واجهة استوديو عصرية تدعم الوضعين الفاتح والداكن واللغة العربية بالكامل.",
-    "en": "🎉 Test Release of EarPurifier:\n• High-fidelity AI vocal isolation and audio purification.\n• High-speed cloud processing on Kaggle T4 GPUs plus full offline local engine.\n• Modern studio interface with full Light/Dark themes and bilingual localization."
+    "ar": "🎉 تحديث هدوء v0.0.2:\n• تسريع وتخفيف حجم المحرك المحلي.\n• تحسينات على آلية حساب الوقت المتبقي (ETA) وشريط التقدم في المعالجة المحلية.\n• تحسينات في واجهة المستخدم والرسائل التوضيحية.",
+    "en": "🎉 EarPurifier v0.0.2 Update:\n• Lighter, faster local engine lifecycle and setup.\n• Two-phase dynamic ETA estimation for local processing.\n• UI improvements in user messages"
   }
 }
