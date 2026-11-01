@@ -18,10 +18,52 @@ try:
 except ImportError:
     from src.i18n import t, is_rtl, translate_worker_message
 
+try:
+    from dependency_manager import DependencyManager
+except ImportError:
+    from src.dependency_manager import DependencyManager
+
 
 # ─── 3-Zone Compact Audio Track Card Presentation View ────────────────────────
 
 # ─── Model & Stage ETA Estimators ─────────────────────────────────────────────
+
+def get_local_model_rtf(model_name: str, has_gpu: bool) -> tuple[float, float]:
+    """Returns (rtf_multiplier, warmup_seconds) for local hardware execution."""
+    m = (model_name or "").lower()
+    if has_gpu:
+        if "kim" in m:
+            return 0.15, 12.0
+        elif "mdx" in m:
+            return 0.30, 15.0
+        elif "roformer" in m:
+            return 0.75, 18.0
+        return 0.30, 15.0
+    else:
+        # Local CPU inference
+        if "kim" in m:
+            return 1.10, 22.0
+        elif "mdx" in m:
+            return 2.50, 28.0
+        elif "roformer" in m:
+            return 5.50, 35.0
+        return 2.50, 28.0
+
+
+def compute_local_stage_estimates(duration: float, model_name: str, has_gpu: bool) -> dict[str, float]:
+    """Computes empirical duration estimates (in seconds) for local pipeline stages."""
+    d = max(0.0, float(duration))
+    rtf, warmup = get_local_model_rtf(model_name, has_gpu)
+    t_extract = max(3.0, min(30.0, 3.0 + d * 0.005))
+    t_infer = rtf * d
+    t_remux = max(5.0, min(45.0, 5.0 + d * 0.010))
+    return {
+        "EXTRACTING": t_extract,
+        "WARMUP": warmup,
+        "INFERENCE": t_infer,
+        "REMUXING": t_remux,
+        "TOTAL": t_extract + warmup + t_infer + t_remux,
+    }
 
 def get_model_rtf(model_name: str) -> tuple[float, float]:
     """Returns (rtf_multiplier, overhead_seconds) based on model architecture."""
@@ -113,6 +155,10 @@ class JobWidget(QWidget):
         self._congested_mins = 2
         self._raw_message = ""
         self._theme_mode = Theme.get_mode()
+        self._infer_start_time = None
+        self._infer_baseline_time = 0.0
+        self._t_remux = 0.0
+        self._stage_start_time = None
 
         # Elapsed seconds calculation
         try:
@@ -457,9 +503,9 @@ class JobWidget(QWidget):
             return
 
         model_name = self.job_dict.get("model") or ""
-        estimates = compute_stage_estimates(self.duration, model_name)
 
         if "Cloud" in self.mode:
+            estimates = compute_stage_estimates(self.duration, model_name)
             cloud_stages = ["EXTRACTING", "UPLOADING", "PROCESSING_CLOUD", "DOWNLOADING", "REMUXING"]
             if status in cloud_stages:
                 idx = cloud_stages.index(status)
@@ -475,20 +521,29 @@ class JobWidget(QWidget):
             elif status == "PENDING":
                 self.lbl_eta.setText(t("eta_in_queue"))
         else:
+            has_gpu = DependencyManager.has_nvidia_gpu() if hasattr(DependencyManager, "has_nvidia_gpu") else False
+            local_est = compute_local_stage_estimates(self.duration, model_name, has_gpu)
             if status == "EXTRACTING":
-                rem = int(round(estimates["EXTRACTING"] + estimates["PROCESSING_LOCAL"] + estimates["REMUXING"]))
+                rem = int(round(local_est["EXTRACTING"] + local_est["WARMUP"] + local_est["INFERENCE"] + local_est["REMUXING"]))
                 self.remaining_seconds = rem
                 self.eta_initialized = True
                 self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
             elif status == "PROCESSING_LOCAL":
-                rem = int(round(estimates["PROCESSING_LOCAL"] + estimates["REMUXING"]))
+                import time
+                self._stage_start_time = time.time()
+                self._infer_start_time = None
+                self._infer_baseline_time = local_est["INFERENCE"]
+                self._t_remux = local_est["REMUXING"]
+                rem = int(round(local_est["WARMUP"] + local_est["INFERENCE"] + local_est["REMUXING"]))
                 self.remaining_seconds = rem
                 self.eta_initialized = True
                 self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
             elif status == "REMUXING":
-                rem = int(round(estimates["REMUXING"]))
+                rem = int(round(local_est["REMUXING"]))
                 self.remaining_seconds = min(self.remaining_seconds, rem) if self.remaining_seconds > 0 else rem
                 self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+            elif status == "PENDING":
+                self.lbl_eta.setText(t("eta_in_queue"))
 
     def set_cloud_congested(self, congested: bool, mins: int = 2):
         self.is_cloud_congested = congested
@@ -538,8 +593,13 @@ class JobWidget(QWidget):
         if not getattr(self, "eta_initialized", False):
             self._recalculate_eta_on_stage_change(self.current_status)
 
-        if self.remaining_seconds > 0:
-            self.remaining_seconds -= 1
+        if "Local" in self.mode and self.current_status == "PROCESSING_LOCAL" and getattr(self, "_infer_start_time", None) is None:
+            min_floor = max(5, int(round(getattr(self, "_infer_baseline_time", 0.0) + getattr(self, "_t_remux", 5.0))))
+            if self.remaining_seconds > min_floor:
+                self.remaining_seconds -= 1
+        else:
+            if self.remaining_seconds > 0:
+                self.remaining_seconds -= 1
 
         self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
 
@@ -577,6 +637,9 @@ class JobWidget(QWidget):
             self.is_cloud_congested = False
             final_sec = self.job_dict.get("final_elapsed_seconds", self.elapsed_seconds)
             self.lbl_meta_dur.setText(self._format_elapsed(final_sec))
+            if status == "COMPLETED":
+                self.progress.setRange(0, 100)
+                self.progress.setValue(100)
             self.progress.setVisible(False)
             self.lbl_elapsed.setVisible(False)
 
@@ -630,7 +693,15 @@ class JobWidget(QWidget):
                 self.lbl_eta.setVisible(True)
                 self.lbl_eta.setStyleSheet(f"font-family: {mono_font}; font-size: 11px; font-weight: 700; color: {accent_blue}; background: transparent;")
             self.progress.setVisible(True)
-            if "Local" not in self.mode or self._last_pct < 0:
+            if "Local" in self.mode:
+                self.progress.setRange(0, 100)
+                if status == "EXTRACTING":
+                    self.progress.setValue(max(self.progress.value(), 5))
+                elif status == "PROCESSING_LOCAL":
+                    self.progress.setValue(max(self.progress.value(), 10))
+                elif status == "REMUXING":
+                    self.progress.setValue(max(self.progress.value(), 90))
+            else:
                 self.progress.setRange(0, 0)
             self.lbl_elapsed.setVisible(False)
             self.btn_show_folder.setVisible(False)
@@ -640,6 +711,9 @@ class JobWidget(QWidget):
             self.lbl_message.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {accent_emerald}; background: transparent;")
 
     def update_message(self, message: str):
+        if self.current_status in ["COMPLETED", "ABORTED", "ERROR", "FAILED"]:
+            return
+
         if message.startswith("QUEUE_CONGESTED:"):
             try:
                 mins = int(message.split(":", 1)[1])
@@ -654,18 +728,65 @@ class JobWidget(QWidget):
 
         # Scrape progress percentage in local mode for live progress bar and ETA updates
         if "Local" in self.mode and self.current_status == "PROCESSING_LOCAL":
-            match = re.search(r'(\d{1,3})%', message)
-            if match:
+            pass_match = re.search(r'\(Pass (\d+)/(\d+)\)\.\.\.\s*(\d{1,3})%', message)
+            pct_match = re.search(r'(\d{1,3})%', message)
+            p_infer = None
+            global_pct = None
+
+            if pass_match:
+                pass_num = int(pass_match.group(1))
+                pct = max(0, min(100, int(pass_match.group(3))))
+                if pass_num == 1:
+                    p_infer = (pct / 100.0) * 0.95
+                    global_pct = 10.0 + (pct / 100.0) * 76.0
+                else:
+                    p_infer = 0.95 + (pct / 100.0) * 0.05
+                    global_pct = 86.0 + (pct / 100.0) * 4.0
+            elif pct_match:
+                pct = max(0, min(100, int(pct_match.group(1))))
+                p_infer = pct / 100.0
+                global_pct = 10.0 + (pct / 100.0) * 80.0
+
+            if global_pct is not None:
                 try:
-                    pct = max(0, min(100, int(match.group(1))))
-                    self._last_pct = pct
+                    new_val = max(self.progress.value(), int(round(global_pct)))
                     self.progress.setRange(0, 100)
-                    self.progress.setValue(pct)
-                    if pct >= 5 and self.stage_elapsed > 2:
-                        rem_infer = self.stage_elapsed * (100.0 - pct) / float(pct)
-                        estimates = compute_stage_estimates(self.duration, self.job_dict.get("model", ""))
-                        self.remaining_seconds = max(5, int(round(rem_infer + estimates["REMUXING"])))
-                        self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+                    self.progress.setValue(min(90, new_val))
+                    self._last_pct = new_val
+
+                    import time
+                    now = time.time()
+                    if getattr(self, "_infer_start_time", None) is None:
+                        stage_dur = now - getattr(self, "_stage_start_time", now)
+                        if self.stage_elapsed > 0 and stage_dur < 1.0:
+                            self._infer_start_time = now - float(self.stage_elapsed)
+                        else:
+                            self._infer_start_time = now
+                        baseline_rem = getattr(self, "_infer_baseline_time", 0.0) + getattr(self, "_t_remux", 10.0)
+                        if baseline_rem > 0:
+                            self.remaining_seconds = int(round(baseline_rem))
+                            self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
+
+                    delta_t = max(0.1, now - self._infer_start_time)
+                    if p_infer is not None and p_infer >= 0.03 and delta_t >= 2.0:
+                        r_obs = p_infer / delta_t
+                        t_base = getattr(self, "_infer_baseline_time", 0.0)
+                        if t_base <= 0.0 and self.duration > 0.0:
+                            has_gpu = DependencyManager.has_nvidia_gpu() if hasattr(DependencyManager, "has_nvidia_gpu") else False
+                            local_est = compute_local_stage_estimates(self.duration, self.job_dict.get("model", ""), has_gpu)
+                            t_base = local_est["INFERENCE"]
+                            self._infer_baseline_time = t_base
+                            self._t_remux = local_est["REMUXING"]
+
+                        r_base = 1.0 / max(1.0, t_base)
+                        beta = min(0.85, 0.2 + 0.65 * p_infer)
+                        r_eff = beta * r_obs + (1.0 - beta) * r_base
+                        if r_eff > 0:
+                            rem_infer = (1.0 - p_infer) / r_eff
+                            t_remux = getattr(self, "_t_remux", 10.0)
+                            new_eta = max(5, int(round(rem_infer + t_remux)))
+                            self.remaining_seconds = new_eta
+                            self.lbl_eta.setText(format_eta_time(self.remaining_seconds))
                 except Exception:
                     pass
 

@@ -4,7 +4,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from .theme import Theme, FONT_FAMILY
-from i18n import t
+from .components import RotatingSpinner
+from i18n import t, translate_worker_message
 
 
 class DownloadOverlayWidget(QWidget):
@@ -47,11 +48,21 @@ class DownloadOverlayWidget(QWidget):
         self.progress.setVisible(False)
         card_layout.addWidget(self.progress)
 
+        self.spinner = RotatingSpinner(18)
+        self.spinner.hide()
+        self._raw_status = ""
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: #557364; font-size: 11px; border: none; background: transparent;")
         self.lbl_status.setAlignment(Qt.AlignCenter)
         self.lbl_status.setVisible(False)
-        card_layout.addWidget(self.lbl_status)
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(8)
+        status_row.setAlignment(Qt.AlignCenter)
+        status_row.addWidget(self.spinner)
+        status_row.addWidget(self.lbl_status)
+        card_layout.addLayout(status_row)
 
         self.btn_download = QPushButton(btn_text)
         self.btn_download.setCursor(Qt.PointingHandCursor)
@@ -75,14 +86,26 @@ class DownloadOverlayWidget(QWidget):
     def set_downloading(self):
         self.btn_download.setEnabled(False)
         self.progress.setVisible(True)
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
+        self.progress.setRange(0, 0)
+        self.spinner.start()
         self.lbl_status.setVisible(True)
+        self.lbl_status.setStyleSheet("color: #557364; font-size: 11px; border: none; background: transparent;")
+
+    def set_status_message(self, text: str):
+        self._raw_status = text
+        self.lbl_status.setText(translate_worker_message(text))
 
     def set_error(self, err_msg: str):
+        self.spinner.stop()
         self.btn_download.setEnabled(True)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
         self.lbl_status.setText(err_msg)
-        self.lbl_status.setStyleSheet("color: #ef4444; font-size: 11px;")
+        self.lbl_status.setStyleSheet("color: #ef4444; font-size: 11px; border: none; background: transparent;")
+
+    def hideEvent(self, event):
+        self.spinner.stop()
+        super().hideEvent(event)
 
 
 class CloseActiveJobDialog(QDialog):

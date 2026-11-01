@@ -277,6 +277,13 @@ class MainWindow(QMainWindow):
             self.local_section.retranslate_ui()
         if hasattr(self, 'update_banner'):
             self.update_banner.retranslate_ui(new_lang)
+        if hasattr(self, 'engine_overlay') and self.engine_overlay.isVisible():
+            engine_size = "~2.7 GB" if DependencyManager.has_nvidia_gpu() else "~350 MB"
+            self.engine_overlay.lbl_title.setText(t("engine_title"))
+            self.engine_overlay.lbl_desc.setText(t("engine_desc", size=engine_size))
+            self.engine_overlay.btn_download.setText(t("engine_btn_download"))
+            if getattr(self.engine_overlay, "_raw_status", None):
+                self.engine_overlay.set_status_message(self.engine_overlay._raw_status)
 
     def check_ffmpeg(self):
         if not DependencyManager.has_ffmpeg():
@@ -321,8 +328,9 @@ class MainWindow(QMainWindow):
             self.local_section.setGraphicsEffect(blur)
             self.local_section.setEnabled(False)
 
+            engine_size = "~2.7 GB" if DependencyManager.has_nvidia_gpu() else "~350 MB"
             self.engine_overlay = DownloadOverlayWidget(
-                t("engine_title"), t("engine_desc"), t("engine_btn_download")
+                t("engine_title"), t("engine_desc", size=engine_size), t("engine_btn_download")
             )
             self.engine_overlay.btn_download.clicked.connect(self.start_engine_download)
             grid.addWidget(self.engine_overlay, 0, 0)
@@ -331,12 +339,13 @@ class MainWindow(QMainWindow):
         self.engine_overlay.set_downloading()
         self.engine_thread = EngineDownloader()
         self.engine_thread.progress_update.connect(self.engine_overlay.progress.setValue)
-        self.engine_thread.status_update.connect(self.engine_overlay.lbl_status.setText)
+        self.engine_thread.status_update.connect(self.engine_overlay.set_status_message)
         self.engine_thread.finished_download.connect(self.on_engine_downloaded)
         self.engine_thread.start()
 
     def on_engine_downloaded(self, success: bool, message: str):
         if success:
+            self.engine_overlay.spinner.stop()
             self.engine_overlay.setVisible(False)
             self.local_section.setGraphicsEffect(None)
             self.local_section.setEnabled(True)
@@ -344,18 +353,22 @@ class MainWindow(QMainWindow):
             self.engine_overlay.set_error(t("engine_status_failed", message=message))
 
     def download_local_model(self, model_name: str, subfolder: str):
+        friendly_name = self.local_section._get_friendly_model_name()
         self.local_section.btn_add.setEnabled(False)
-        self.local_section.btn_add.setText(t("btn_downloading_model"))
+        self.local_section.set_download_progress(0, friendly_name)
 
         models_dir = os.path.join(self.config.appdata_dir, "models", subfolder)
         os.makedirs(models_dir, exist_ok=True)
 
         self.model_thread = ModelDownloader(model_name, models_dir)
-        self.model_thread.status_update.connect(lambda text: self.local_section.btn_add.setText(text))
+        self.model_thread.progress_update.connect(
+            lambda pct: self.local_section.set_download_progress(pct, friendly_name)
+        )
         self.model_thread.finished_download.connect(self.on_model_downloaded)
         self.model_thread.start()
 
     def on_model_downloaded(self, success: bool, message: str):
+        self.local_section.reset_download_progress()
         self.local_section.btn_add.setEnabled(True)
         self.local_section.update_model_button_state()
         if not success:

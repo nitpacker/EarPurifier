@@ -55,7 +55,28 @@ class DependencyManager:
             return False
             
         separator_exe = os.path.join(DependencyManager.get_env_dir(), "Scripts", "audio-separator" + ext)
-        return os.path.exists(separator_exe)
+        if not os.path.exists(separator_exe):
+            return False
+
+        marker_file = os.path.join(DependencyManager.get_env_dir(), ".engine_installed")
+        if os.path.exists(marker_file):
+            return True
+
+        # Backward compatibility: If an existing installation has both audio_separator and torch in site-packages,
+        # backfill the marker file so the user is not forced to re-download.
+        site_packages = (
+            os.path.join(DependencyManager.get_env_dir(), "Lib", "site-packages") if os.name == "nt"
+            else os.path.join(DependencyManager.get_env_dir(), "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+        )
+        if os.path.isdir(os.path.join(site_packages, "audio_separator")) and os.path.isdir(os.path.join(site_packages, "torch")):
+            try:
+                with open(marker_file, "w", encoding="utf-8") as f:
+                    f.write("INSTALLED\n")
+                return True
+            except Exception:
+                return True
+
+        return False
 
     @staticmethod
     def has_nvidia_gpu() -> bool:
@@ -172,44 +193,57 @@ class EngineDownloader(QThread):
                 os.remove(tar_path)
             
             # 2. Create Environment
-            self.status_update.emit("Building isolated Python environment (this may take a minute)...")
+            self.status_update.emit("Building isolated Python environment... (Step 1/3)")
             self.progress_update.emit(20)
             
-            kwargs = {"capture_output": True, "text": True, "check": True}
+            kwargs = {"capture_output": True, "text": True}
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
 
-            if not os.path.exists(env_dir):
-                subprocess.run([mamba_exe, "create", "-y", "-p", env_dir, "python=3.11", "pip", "-c", "conda-forge"], **kwargs)
-
             pip_exe = os.path.join(env_dir, "Scripts", "pip.exe") if os.name == "nt" else os.path.join(env_dir, "bin", "pip")
+            if not os.path.exists(env_dir) or not os.path.exists(pip_exe):
+                if os.path.exists(env_dir):
+                    try:
+                        shutil.rmtree(env_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                res = subprocess.run([mamba_exe, "create", "-y", "-p", env_dir, "python=3.11", "pip", "-c", "conda-forge"], **kwargs)
+                if res.returncode != 0:
+                    raise RuntimeError(f"Environment creation failed: {res.stderr}")
+
+            pip_base = [pip_exe, "install", "--no-cache-dir", "--disable-pip-version-check"]
             has_gpu = DependencyManager.has_nvidia_gpu()
 
             # 3. Install PyTorch (Adaptive Hardware Acceleration)
             installed_gpu = False
             if has_gpu:
-                self.status_update.emit("NVIDIA GPU detected. Installing PyTorch CUDA acceleration...")
+                self.status_update.emit("NVIDIA GPU detected. Installing PyTorch CUDA acceleration... (Step 2/3)")
                 self.progress_update.emit(45)
-                res = subprocess.run([pip_exe, "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu121"], **kwargs)
+                res = subprocess.run(pip_base + ["torch", "--index-url", "https://download.pytorch.org/whl/cu121"], **kwargs)
                 if res.returncode == 0:
                     installed_gpu = True
                 else:
                     logger.warning(f"CUDA PyTorch install failed ({res.stderr}). Falling back to CPU.")
 
             if not installed_gpu:
-                self.status_update.emit("Installing PyTorch CPU engine...")
+                self.status_update.emit("Installing PyTorch CPU engine... (Step 2/3)")
                 self.progress_update.emit(50)
-                res = subprocess.run([pip_exe, "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu"], **kwargs)
+                res = subprocess.run(pip_base + ["torch", "--index-url", "https://download.pytorch.org/whl/cpu"], **kwargs)
                 if res.returncode != 0:
                     raise RuntimeError(f"PyTorch install failed: {res.stderr}")
 
             # 4. Install Audio Separator
-            self.status_update.emit("Installing Audio Separator...")
+            self.status_update.emit("Installing Audio Separator... (Step 3/3)")
             self.progress_update.emit(85)
             sep_pkg = "audio-separator[gpu]" if installed_gpu else "audio-separator[cpu]"
-            res = subprocess.run([pip_exe, "install", sep_pkg], **kwargs)
+            res = subprocess.run(pip_base + [sep_pkg], **kwargs)
             if res.returncode != 0:
                 raise RuntimeError(f"Audio Separator install failed: {res.stderr}")
+
+            # 5. Write installation verification marker
+            marker_file = os.path.join(env_dir, ".engine_installed")
+            with open(marker_file, "w", encoding="utf-8") as f:
+                f.write("INSTALLED\n")
 
             engine_type = "GPU Accelerated" if installed_gpu else "CPU"
             self.status_update.emit(f"Local AI Engine ({engine_type}) installed successfully.")

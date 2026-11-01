@@ -201,6 +201,96 @@ class TestUIOverhaul(unittest.TestCase):
         diff = ar_keys ^ en_keys
         self.assertEqual(len(diff), 0, f"Translation key mismatch: {diff}")
 
+    def test_10_model_download_progress_gradient_rtl_ltr(self):
+        """Verify direction-aware (LTR vs RTL) linear gradient on model download button."""
+        cfg = ConfigManager()
+        qm = QueueManager()
+        section = JobQueueSection("Local (GPU)", qm, cfg)
+
+        # 1. English (LTR)
+        i18n.set_language("en")
+        section.set_download_progress(45, "ReRoFormer")
+        btn_qss_ltr = section.btn_add.styleSheet()
+        self.assertIn("x1:0", btn_qss_ltr)
+        self.assertIn("x2:1", btn_qss_ltr)
+        self.assertIn("#10b981", btn_qss_ltr)
+        self.assertIn("#a7d0be", btn_qss_ltr)
+        self.assertIn("ReRoFormer", section.btn_add.text())
+
+        # 2. Arabic (RTL)
+        i18n.set_language("ar")
+        section.set_download_progress(60, "MDX23C")
+        btn_qss_rtl = section.btn_add.styleSheet()
+        self.assertIn("x1:1", btn_qss_rtl)
+        self.assertIn("x2:0", btn_qss_rtl)
+        self.assertIn("#10b981", btn_qss_rtl)
+        self.assertIn("#a7d0be", btn_qss_rtl)
+        self.assertIn("MDX23C", section.btn_add.text())
+
+        # 3. Boundary: 0% and 100%
+        section.set_download_progress(0, "Kim Vocal 2")
+        self.assertIn("background: #a7d0be;", section.btn_add.styleSheet())
+
+        section.set_download_progress(100, "Kim Vocal 2")
+        self.assertIn("background: #10b981;", section.btn_add.styleSheet())
+
+        # 4. Reset restores primary button styling
+        section.reset_download_progress()
+        self.assertNotIn("background: #10b981;", section.btn_add.styleSheet())
+
+        # Reset language to ar default
+        i18n.set_language("ar")
+
+    def test_11_model_download_language_switch_preservation(self):
+        """Verify that language changes mid-download preserve progress, translate label, and flip gradient."""
+        cfg = ConfigManager()
+        qm = QueueManager()
+        section = JobQueueSection("Local (GPU)", qm, cfg)
+        section.btn_add.setEnabled(False)
+        section._model_needs_download = True
+
+        # Start download in English at 45%
+        i18n.set_language("en")
+        section.set_download_progress(45, "ReRoFormer")
+        self.assertIn("Downloading ReRoFormer... 45%", section.btn_add.text())
+        self.assertIn("x1:0", section.btn_add.styleSheet())
+
+        # Switch language to Arabic while download is in progress
+        i18n.set_language("ar")
+        section.retranslate_ui()
+        self.assertIn("ReRoFormer", section.btn_add.text())
+        self.assertIn("45", section.btn_add.text())
+        self.assertIn("x1:1", section.btn_add.styleSheet())
+
+        # Switch back to English
+        i18n.set_language("en")
+        section.retranslate_ui()
+        self.assertIn("Downloading ReRoFormer... 45%", section.btn_add.text())
+        self.assertIn("x1:0", section.btn_add.styleSheet())
+
+        i18n.set_language("ar")
+
+    def test_12_engine_installation_milestone_translations(self):
+        """Verify engine installation milestone messages are localized in Arabic and English."""
+        # 1. English
+        i18n.set_language("en")
+        msg1_en = i18n.translate_worker_message("Building isolated Python environment... (Step 1/3)")
+        msg2_en = i18n.translate_worker_message("Installing PyTorch CPU engine... (Step 2/3)")
+        msg3_en = i18n.translate_worker_message("Installing Audio Separator... (Step 3/3)")
+        self.assertIn("Step 1/3", msg1_en)
+        self.assertIn("Step 2/3", msg2_en)
+        self.assertIn("Step 3/3", msg3_en)
+
+        # 2. Arabic
+        i18n.set_language("ar")
+        msg1_ar = i18n.translate_worker_message("Building isolated Python environment... (Step 1/3)")
+        msg2_ar = i18n.translate_worker_message("Installing PyTorch CPU engine... (Step 2/3)")
+        msg3_ar = i18n.translate_worker_message("Installing Audio Separator... (Step 3/3)")
+        self.assertIn("المرحلة 1/3", msg1_ar)
+        self.assertIn("المرحلة 2/3", msg2_ar)
+        self.assertIn("المرحلة 3/3", msg3_ar)
+
 
 if __name__ == "__main__":
     unittest.main()
+

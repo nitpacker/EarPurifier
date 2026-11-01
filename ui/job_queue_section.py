@@ -478,6 +478,17 @@ class JobQueueSection(QWidget):
         if job_id in self.job_widgets:
             self.job_widgets[job_id].update_message(message)
 
+    def _get_friendly_model_name(self) -> str:
+        model_selection = self.config.get("local_model", "")
+        model_file = self._get_selected_model_name()
+        combined = f"{model_selection} {model_file}".lower()
+        if "roformer" in combined:
+            return "ReRoFormer"
+        elif "mdx23c" in combined:
+            return "MDX23C"
+        else:
+            return "Kim Vocal 2"
+
     def _get_selected_model_name(self) -> str:
         model_selection = self.config.get("local_model", "")
         if "RoFormer" in model_selection:
@@ -491,6 +502,7 @@ class JobQueueSection(QWidget):
         if "Local" not in self.mode:
             return
         model_name = self._get_selected_model_name()
+        friendly_name = self._get_friendly_model_name()
         if "roformer" in model_name.lower():
             display_name = t("local_engine_sub_roformer")
             size_txt = "~250 MB"
@@ -505,6 +517,7 @@ class JobQueueSection(QWidget):
             subfolder = "Kim_Vocal_2"
 
         self._model_size_txt = size_txt
+        self._model_friendly_name = friendly_name
         self.lbl_sub.setText(display_name)
 
         models_dir = os.path.join(self.config.appdata_dir, "models", subfolder)
@@ -513,9 +526,53 @@ class JobQueueSection(QWidget):
         if os.path.exists(model_path):
             self.btn_add.setText(t("btn_add_media"))
             self._model_needs_download = False
-        else:
-            self.btn_add.setText(t("btn_download_model", size=size_txt))
+            self.reset_download_progress()
+        elif self.btn_add.isEnabled():
+            self.btn_add.setText(t("btn_download_model", model=friendly_name, size=size_txt))
             self._model_needs_download = True
+        else:
+            self._model_needs_download = True
+
+    def set_download_progress(self, pct: int, model_name: str = ""):
+        pct = max(0, min(100, int(pct)))
+        self._current_download_pct = pct
+        if not model_name:
+            model_name = getattr(self, "_model_friendly_name", self._get_friendly_model_name())
+        self.btn_add.setText(t("btn_downloading_model", model=model_name, pct=pct))
+
+        pos = pct / 100.0
+        rtl = is_rtl()
+        x1, x2 = (1, 0) if rtl else (0, 1)
+
+        if pos <= 0.0:
+            grad = "background: #a7d0be;"
+        elif pos >= 1.0:
+            grad = "background: #10b981;"
+        else:
+            grad = (
+                f"background: qlineargradient(x1:{x1}, y1:0, x2:{x2}, y2:0, "
+                f"stop:0 #10b981, stop:{pos:.3f} #10b981, "
+                f"stop:{pos:.3f} #a7d0be, stop:1 #a7d0be);"
+            )
+
+        self.btn_add.setStyleSheet(f"""
+            QPushButton {{
+                {grad}
+                color: #ffffff;
+                font-weight: 800;
+                font-size: 12.5px;
+                padding: 8px 18px;
+                border-radius: 8px;
+                border: none;
+            }}
+            QPushButton:disabled {{
+                {grad}
+                color: #ffffff;
+            }}
+        """)
+
+    def reset_download_progress(self):
+        self.btn_add.setStyleSheet(get_primary_button_qss(self._theme_mode))
 
     def _on_add_clicked(self):
         if "Local" in self.mode and getattr(self, "_model_needs_download", False):
@@ -534,8 +591,12 @@ class JobQueueSection(QWidget):
 
         if "Cloud" in self.mode or not getattr(self, "_model_needs_download", False):
             self.btn_add.setText(t("btn_add_media"))
+        elif not self.btn_add.isEnabled():
+            self.set_download_progress(getattr(self, "_current_download_pct", 0))
         else:
-            self.btn_add.setText(t("btn_download_model", size=getattr(self, "_model_size_txt", "~250 MB")))
+            friendly_name = getattr(self, "_model_friendly_name", self._get_friendly_model_name())
+            size_txt = getattr(self, "_model_size_txt", "~250 MB")
+            self.btn_add.setText(t("btn_download_model", model=friendly_name, size=size_txt))
 
         self.btn_select_mode.setText(t("btn_exit_selection") if self.selection_mode else t("btn_select_mode"))
         self.btn_clear_history.setText(t("btn_clear_history"))

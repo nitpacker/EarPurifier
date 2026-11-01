@@ -463,6 +463,7 @@ class RotatingSpinner(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(40)
         self._timer.timeout.connect(self._rotate)
+        self.hide()
 
     def start(self):
         if not self._is_spinning:

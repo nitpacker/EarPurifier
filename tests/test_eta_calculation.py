@@ -10,7 +10,9 @@ from ui.job_widget import (
     JobWidget,
     get_model_rtf,
     compute_stage_estimates,
-    format_eta_time
+    format_eta_time,
+    get_local_model_rtf,
+    compute_local_stage_estimates
 )
 from i18n import t, set_language
 
@@ -139,7 +141,7 @@ class TestETACalculation(unittest.TestCase):
         widget.deleteLater()
 
     def test_05_job_widget_local_mode_progress(self):
-        """Verify local mode ETA visibility, progress bar updating, and percent-based extrapolation."""
+        """Verify local mode ETA visibility, monotonic progress bar updating, and hardware-aware rate blending."""
         set_language("en")
         job_data = {
             "original_media": "C:/test/sample.mp4",
@@ -148,8 +150,11 @@ class TestETACalculation(unittest.TestCase):
             "status": "PENDING"
         }
         widget = JobWidget("job-456", job_data, mode="Local (GPU)")
-        widget.update_status("PROCESSING_LOCAL")
+        widget.update_status("EXTRACTING")
+        self.assertEqual(widget.progress.value(), 5)
 
+        widget.update_status("PROCESSING_LOCAL")
+        self.assertEqual(widget.progress.value(), 10)
         self.assertFalse(widget.lbl_eta.isHidden())
         self.assertFalse(widget.sep3.isHidden())
 
@@ -157,13 +162,30 @@ class TestETACalculation(unittest.TestCase):
         widget.stage_elapsed = 20
         widget.update_message("Processing audio... 50%")
 
-        # Progress bar should update to 50
+        # In monotonic scale: 10 + 0.5 * 80 = 50%
         self.assertEqual(widget.progress.value(), 50)
         self.assertEqual(widget.progress.maximum(), 100)
 
-        # Remaining inference = 20 * (100 - 50) / 50 = 20s. Remux ~ 11s. Total ~ 31s
-        self.assertGreaterEqual(widget.remaining_seconds, 28)
-        self.assertLessEqual(widget.remaining_seconds, 35)
+        # Rate-blended ETA accounting for hardware baselines: between 25s and 55s
+        self.assertGreaterEqual(widget.remaining_seconds, 25)
+        self.assertLessEqual(widget.remaining_seconds, 55)
+
+        # Test multi-pass monotonic scaling (Kim Vocal 2 passes)
+        widget.update_message("Processing audio (Pass 1/2)... 50%")
+        # Pass 1 at 50% maps to 10 + 0.5 * 76 = 48, but monotonic value stays >= 50
+        self.assertGreaterEqual(widget.progress.value(), 50)
+
+        widget.update_message("Processing audio (Pass 2/2)... 50%")
+        # Pass 2 at 50% maps to 86 + 0.5 * 4 = 88%
+        self.assertEqual(widget.progress.value(), 88)
+
+        # Remuxing stage reaches 90%
+        widget.update_status("REMUXING")
+        self.assertGreaterEqual(widget.progress.value(), 90)
+
+        # Completed reaches 100%
+        widget.update_status("COMPLETED")
+        self.assertEqual(widget.progress.value(), 100)
 
         widget.deleteLater()
 
@@ -210,6 +232,114 @@ class TestETACalculation(unittest.TestCase):
 
         widget.deleteLater()
 
+    def test_08_local_model_rtf_calibration(self):
+        """Verify empirical local RTFs and warmup latencies for CPU and GPU."""
+        # GPU tests
+        rtf_gpu, warmup_gpu = get_local_model_rtf("Kim Vocal 2", has_gpu=True)
+        self.assertEqual(rtf_gpu, 0.15)
+        self.assertEqual(warmup_gpu, 12.0)
+
+        rtf_gpu_roformer, _ = get_local_model_rtf("RoFormer", has_gpu=True)
+        self.assertEqual(rtf_gpu_roformer, 0.75)
+
+        # CPU tests
+        rtf_cpu_kim, warmup_cpu = get_local_model_rtf("Kim Vocal 2", has_gpu=False)
+        self.assertEqual(rtf_cpu_kim, 1.10)
+        self.assertEqual(warmup_cpu, 22.0)
+
+        rtf_cpu_mdx, _ = get_local_model_rtf("MDX23C", has_gpu=False)
+        self.assertEqual(rtf_cpu_mdx, 2.50)
+
+        rtf_cpu_roformer, _ = get_local_model_rtf("RoFormer", has_gpu=False)
+        self.assertEqual(rtf_cpu_roformer, 5.50)
+
+        # Local stage estimates check
+        est_cpu = compute_local_stage_estimates(180.0, "Kim Vocal 2", has_gpu=False)
+        self.assertIn("EXTRACTING", est_cpu)
+        self.assertIn("WARMUP", est_cpu)
+        self.assertIn("INFERENCE", est_cpu)
+        self.assertIn("REMUXING", est_cpu)
+        self.assertAlmostEqual(est_cpu["INFERENCE"], 1.10 * 180.0)
+
+    def test_09_terminal_message_protection(self):
+        """Verify completed/aborted job cards are protected from trailing worker logs."""
+        job_data = {
+            "original_media": "C:/test/sample.mp4",
+            "duration": 60.0,
+            "model": "Kim Vocal 2",
+            "status": "PROCESSING_LOCAL"
+        }
+        widget = JobWidget("job-protect", job_data, mode="Local (GPU)")
+        widget.update_status("COMPLETED")
+        self.assertIn("Purification complete", widget._raw_message)
+
+        # Trailing cleanup message should NOT overwrite completion
+        widget.update_message("Cleaned up temporary files.")
+        self.assertIn("Purification complete", widget._raw_message)
+
+        widget.deleteLater()
+
+    def test_10_warmup_isolation_from_infer_delta_t(self):
+        """Verify that warmup elapsed time before inference does not distort inference throughput sampling."""
+        job_data = {
+            "original_media": "C:/test/sample.mp4",
+            "duration": 300.0,
+            "model": "Kim Vocal 2",
+            "status": "PENDING"
+        }
+        widget = JobWidget("job-warmup-iso", job_data, mode="Local (GPU)")
+        widget.update_status("PROCESSING_LOCAL")
+
+        # Simulate 25 seconds of warmup in real time:
+        # We manually simulate _stage_start_time being 25 seconds ago and stage_elapsed = 25
+        import time
+        widget._stage_start_time = time.time() - 25.0
+        widget.stage_elapsed = 25
+
+        # First inference message arrives (0% or 3%)
+        widget.update_message("Processing audio... 3%")
+
+        # _infer_start_time must be set to 'now', NOT 25 seconds ago!
+        self.assertIsNotNone(widget._infer_start_time)
+        infer_delta = time.time() - widget._infer_start_time
+        self.assertLess(infer_delta, 1.5)
+
+        widget.deleteLater()
+
+    def test_11_has_local_engine_legacy_backfill(self):
+        """Verify that has_local_engine() detects existing functional engines and backfills marker."""
+        import tempfile
+        import shutil
+        from dependency_manager import DependencyManager
+
+        temp_appdata = tempfile.mkdtemp()
+        old_get_appdata = DependencyManager.get_appdata_dir
+        DependencyManager.get_appdata_dir = lambda: temp_appdata
+        try:
+            env_dir = os.path.join(temp_appdata, "env")
+            scripts_dir = os.path.join(env_dir, "Scripts")
+            site_packages = os.path.join(env_dir, "Lib", "site-packages")
+            os.makedirs(scripts_dir, exist_ok=True)
+            os.makedirs(os.path.join(site_packages, "audio_separator"), exist_ok=True)
+            os.makedirs(os.path.join(site_packages, "torch"), exist_ok=True)
+
+            ext = ".exe" if os.name == "nt" else ""
+            with open(os.path.join(env_dir, "python" + ext), "w") as f:
+                f.write("")
+            with open(os.path.join(scripts_dir, "audio-separator" + ext), "w") as f:
+                f.write("")
+
+            marker = os.path.join(env_dir, ".engine_installed")
+            self.assertFalse(os.path.exists(marker))
+
+            # Calling has_local_engine should return True and backfill marker
+            self.assertTrue(DependencyManager.has_local_engine())
+            self.assertTrue(os.path.exists(marker))
+        finally:
+            DependencyManager.get_appdata_dir = old_get_appdata
+            shutil.rmtree(temp_appdata, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
+

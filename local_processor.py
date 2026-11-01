@@ -175,6 +175,7 @@ class LocalJobProcessor(QThread):
                 "--model_file_dir", models_dir,
                 "--output_dir", temp_dir,
                 "--output_format", "WAV",
+                "--single_stem", "Vocals",
                 "--log_level", "INFO"
             ]
             
@@ -200,6 +201,8 @@ class LocalJobProcessor(QThread):
             percent_pattern = re.compile(r'(\d{1,3})%')
             last_pct = -1
             captured_output = []
+            is_two_pass = ("kim" in model_name.lower())
+            current_pass = 1
             
             while True:
                 if is_aborted():
@@ -214,8 +217,13 @@ class LocalJobProcessor(QThread):
                     if match:
                         try:
                             pct = int(match.group(1))
+                            if is_two_pass and current_pass == 1 and last_pct >= 80 and pct < 30:
+                                current_pass = 2
                             if pct != last_pct:
-                                self._log(job_id, f"Processing audio... {pct}%")
+                                if is_two_pass:
+                                    self._log(job_id, f"Processing audio (Pass {current_pass}/2)... {pct}%")
+                                else:
+                                    self._log(job_id, f"Processing audio... {pct}%")
                                 last_pct = pct
                         except Exception:
                             pass
@@ -242,7 +250,8 @@ class LocalJobProcessor(QThread):
             # Identify vocal file with case-insensitive check
             clean_wav = None
             for f in os.listdir(temp_dir):
-                if f.lower().endswith(".wav") and "(vocals)" in f.lower():
+                f_low = f.lower()
+                if f_low.endswith(".wav") and ("(vocals)" in f_low or "vocals" in f_low or "vocal" in f_low):
                     clean_wav = os.path.join(temp_dir, f)
                     break
                     

@@ -4,6 +4,7 @@ Provides comprehensive bilingual support (Arabic default, English fallback),
 native RTL layout detection, and Arabic pluralization helpers.
 """
 
+import re
 from typing import Dict, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
@@ -42,8 +43,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "local_engine_sub_mdx23c": "أداء متوازن وسريع · نموذج MDX23C",
         "local_engine_sub_kim": "أسرع أداء · نموذج Kim Vocal 2",
         "btn_add_media": "＋ إضافة وسائط",
-        "btn_download_model": "⬇ تنزيل النموذج ({size})",
-        "btn_downloading_model": "⬇ جارٍ التنزيل...",
+        "btn_download_model": "⬇ تنزيل {model} ({size})",
+        "btn_downloading_model": "⬇ جارٍ تنزيل {model}... {pct}٪",
+        "engine_step_env": "المرحلة 1/3: إعداد البيئة المعزولة...",
+        "engine_step_torch": "المرحلة 2/3: تثبيت معالج الذكاء الاصطناعي...",
+        "engine_step_separator": "المرحلة 3/3: تثبيت أداة فصل الصوت...",
         "btn_select_mode": "تحديد",
         "btn_exit_selection": "إلغاء التحديد",
         "btn_clear_history": "مسح",
@@ -112,6 +116,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "msg_running_local_engine": "جارٍ تشغيل محرك الذكاء الاصطناعي المحلي...",
         "msg_processing_audio": "جارٍ معالجة الصوت...",
         "msg_processing_audio_pct": "جارٍ معالجة الصوت... {pct}٪",
+        "msg_processing_audio_pass": "جارٍ معالجة الصوت (المرحلة {pass_num}/{total_passes})...",
+        "msg_processing_audio_pass_pct": "جارٍ معالجة الصوت (المرحلة {pass_num}/{total_passes})... {pct}٪",
 
         # Settings Dialog
         "settings_window_title": "الإعدادات - EarPurifier",
@@ -163,7 +169,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "ffmpeg_btn_download": "تنزيلها تلقائياً",
         "ffmpeg_status_failed": "فشل التنزيل: {message}",
         "engine_title": "محرك الذكاء الاصطناعي مطلوب",
-        "engine_desc": "لمعالجة الصوت محلياً دون اتصال بالإنترنت على جهازك، يلزم تنزيل المحرك المحمول للذكاء الاصطناعي (~2.5 جيجابايت).",
+        "engine_desc": "لمعالجة الصوت محلياً دون اتصال بالإنترنت على جهازك، يلزم تنزيل المحرك المحمول للذكاء الاصطناعي ({size}).",
         "engine_btn_download": "تنزيل وتثبيت المحرك تلقائياً",
         "engine_status_failed": "فشل التنزيل: {message}",
 
@@ -239,8 +245,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "local_engine_sub_mdx23c": "Balanced Performance · MDX23C AI",
         "local_engine_sub_kim": "High-Speed Processing · Kim Vocal 2 AI",
         "btn_add_media": "＋ Add Media",
-        "btn_download_model": "⬇ Download Model ({size})",
-        "btn_downloading_model": "⬇ Downloading...",
+        "btn_download_model": "⬇ Download {model} ({size})",
+        "btn_downloading_model": "⬇ Downloading {model}... {pct}%",
+        "engine_step_env": "Step 1/3: Setting up isolated environment...",
+        "engine_step_torch": "Step 2/3: Installing AI core...",
+        "engine_step_separator": "Step 3/3: Installing Audio Separator...",
         "btn_select_mode": "Select",
         "btn_exit_selection": "Exit",
         "btn_clear_history": "Clear",
@@ -309,6 +318,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "msg_running_local_engine": "Running Local AI Engine...",
         "msg_processing_audio": "Processing audio...",
         "msg_processing_audio_pct": "Processing audio... {pct}%",
+        "msg_processing_audio_pass": "Processing audio (Pass {pass_num}/{total_passes})...",
+        "msg_processing_audio_pass_pct": "Processing audio (Pass {pass_num}/{total_passes})... {pct}%",
 
         # Settings Dialog
         "settings_window_title": "Settings - EarPurifier",
@@ -360,7 +371,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "ffmpeg_btn_download": "Download Automatically",
         "ffmpeg_status_failed": "Failed: {message}",
         "engine_title": "Engine Required",
-        "engine_desc": "To process audio completely offline on your own hardware, EarPurifier needs to download a portable AI engine (~2.5GB).",
+        "engine_desc": "To process audio completely offline on your own hardware, EarPurifier needs to download a portable AI engine ({size}).",
         "engine_btn_download": "Download & Install Automatically",
         "engine_status_failed": "Failed: {message}",
 
@@ -435,6 +446,10 @@ WORKER_MESSAGE_KEY_MAP = {
     "Job aborted and cleaned up.": "msg_job_aborted_cleaned",
     "Running Local AI Engine...": "msg_running_local_engine",
     "Processing audio...": "msg_processing_audio",
+    "Building isolated Python environment... (Step 1/3)": "engine_step_env",
+    "NVIDIA GPU detected. Installing PyTorch CUDA acceleration... (Step 2/3)": "engine_step_torch",
+    "Installing PyTorch CPU engine... (Step 2/3)": "engine_step_torch",
+    "Installing Audio Separator... (Step 3/3)": "engine_step_separator",
 }
 
 
@@ -554,6 +569,17 @@ def translate_worker_message(msg: str) -> str:
     if msg in WORKER_MESSAGE_KEY_MAP:
         return t(WORKER_MESSAGE_KEY_MAP[msg])
 
+    # Dynamic pass percentage message: "Processing audio (Pass 1/2)... 45%"
+    pass_pct_match = re.search(r'Processing audio \(Pass (\d+)/(\d+)\)\.\.\.\s*(\d{1,3})%', msg)
+    if pass_pct_match:
+        p_num, p_tot, pct_val = pass_pct_match.group(1), pass_pct_match.group(2), pass_pct_match.group(3)
+        return t("msg_processing_audio_pass_pct", pass_num=p_num, total_passes=p_tot, pct=pct_val)
+
+    pass_match = re.search(r'Processing audio \(Pass (\d+)/(\d+)\)', msg)
+    if pass_match:
+        p_num, p_tot = pass_match.group(1), pass_match.group(2)
+        return t("msg_processing_audio_pass", pass_num=p_num, total_passes=p_tot)
+
     # Dynamic percentage message: "Processing audio... 45%"
     if msg.startswith("Processing audio...") and "%" in msg:
         pct_part = msg.replace("Processing audio...", "").replace("%", "").strip()
@@ -583,4 +609,12 @@ def translate_worker_message(msg: str) -> str:
         return t("msg_waiting_kaggle_gpu")
 
     # Return original message if no match found
+    # Engine installation milestones
+    if "step 1/3" in msg_lower or "isolated python environment" in msg_lower:
+        return t("engine_step_env")
+    if "step 2/3" in msg_lower or "pytorch" in msg_lower:
+        return t("engine_step_torch")
+    if "step 3/3" in msg_lower or "audio separator" in msg_lower:
+        return t("engine_step_separator")
+
     return msg
