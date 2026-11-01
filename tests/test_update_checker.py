@@ -66,8 +66,8 @@ class TestUpdateChecker(unittest.TestCase):
         self.assertTrue(is_newer_version("1.0.0-beta.1", "1.0.0-alpha.1"))
 
         # Default APP_VERSION (0.0.1)
-        self.assertTrue(is_newer_version("0.0.2"))
-        self.assertFalse(is_newer_version("0.0.1"))
+        self.assertTrue(is_newer_version("99.99.99"))
+        self.assertFalse(is_newer_version(APP_VERSION))
 
         # Empty / None
         self.assertFalse(is_newer_version(""))
@@ -127,13 +127,13 @@ class TestUpdateChecker(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "tag_name": "v0.0.2",
+            "tag_name": "v99.99.99",
             "body": "<!-- ar -->تحديث الإصدار الثاني<!-- /ar --> <!-- en -->Version 2 release<!-- /en -->",
-            "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.2",
+            "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v99.99.99",
             "assets": [
                 {
                     "name": "EarPurifier.exe",
-                    "browser_download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.exe"
+                    "browser_download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v99.99.99/EarPurifier.exe"
                 }
             ]
         }
@@ -153,8 +153,8 @@ class TestUpdateChecker(unittest.TestCase):
         worker.run()
 
         self.assertEqual(len(received_updates), 1)
-        self.assertEqual(received_updates[0][0], "v0.0.2")
-        self.assertEqual(received_updates[0][3], "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.exe")
+        self.assertEqual(received_updates[0][0], "v99.99.99")
+        self.assertEqual(received_updates[0][3], "https://github.com/nitpacker/EarPurifier/releases/download/v99.99.99/EarPurifier.exe")
         self.assertEqual(len(finished_results), 1)
         self.assertTrue(finished_results[0][0])
         self.assertEqual(finished_results[0][1], "update_available")
@@ -167,7 +167,7 @@ class TestUpdateChecker(unittest.TestCase):
         mock_resp.json.return_value = {
             "tag_name": f"v{APP_VERSION}",
             "body": "Current version notes",
-            "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.1",
+            "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v99.99.99",
             "assets": []
         }
         mock_get.return_value = mock_resp
@@ -252,8 +252,8 @@ class TestUpdateChecker(unittest.TestCase):
         banner.show_update(
             "v0.0.2",
             "<!-- ar -->ميزات جديدة<!-- /ar --> <!-- en -->New features<!-- /en -->",
-            "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.2",
-            "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier.exe"
+            "https://github.com/nitpacker/EarPurifier/releases/tag/v99.99.99",
+            "https://github.com/nitpacker/EarPurifier/releases/download/v99.99.99/EarPurifier.exe"
         )
         self.assertTrue(banner.isVisible())
         self.assertEqual(banner.latest_version, "v0.0.2")

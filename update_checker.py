@@ -15,7 +15,7 @@ from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "0.0.1"
+APP_VERSION = "0.0.2"
 GITHUB_OWNER = "nitpacker"
 GITHUB_REPO = "EarPurifier"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
