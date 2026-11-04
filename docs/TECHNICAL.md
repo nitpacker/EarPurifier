@@ -1,6 +1,6 @@
 # Technical Architecture
 
-*Verified against codebase (v0.0.1).*
+*Verified against codebase (v0.0.2).*
 
 ---
 
@@ -233,7 +233,12 @@ File: `main.py`
 3. **AI Separation Phase**:
    - **ETA Engine Mechanics**:
      - **Cloud Path (`UPLOADING` $\to$ `PROCESSING_CLOUD` $\to$ `DOWNLOADING`)**: ETA is calculated from empirical Real-Time Factors ($\text{RTF}_{\text{model}}$) on Kaggle T4 GPUs: Kim Vocal 2 ($\text{RTF} = 0.135$, ~7.5x real-time), MDX23C ($\text{RTF} = 0.270$, ~3.7x real-time), and Band-Split RoFormer ($\text{RTF} = 0.680$, ~1.45x real-time), plus bounded stage overheads for extraction, upload, container boot, download, and hardware remuxing. As stages complete, remaining ETA dynamically clamps to the sum of remaining phases.
-     - **Local Path (`PROCESSING_LOCAL`)**: `LocalJobProcessor` launches isolated `audio-separator.exe`. Real-time progress is scraped from stdout regex `r'(\d{1,3})%'` and dispatched to UI, where `JobWidget` dynamically calculates remaining time from elapsed stage time ($\text{elapsed} \times \frac{100 - P}{P} + T_{\text{remux}}$) and drives a determinate progress bar.
+     - **Local Path (`PROCESSING_LOCAL`)**: `LocalJobProcessor` launches isolated `audio-separator.exe` (`--single_stem=Vocals`). Local execution employs a unified progress and estimation architecture:
+       - *Monotonic Global Progress Mapping ($0\% \to 100\%$)*: Raw subprocess percentage outputs are mapped onto a strictly non-decreasing global scale: `EXTRACTING` ($0\% \to 5\%$), `WARMUP` ($5\% \to 10\%$), `INFERENCE` ($10\% \to 90\%$), `REMUXING` ($90\% \to 99\%$), `COMPLETED` ($100\%$). For 2-pass architectures (Kim Vocal 2), Pass 1 demixing (95% of inference compute) spans $10\% \to 86\%$ while Pass 2 `match_mix` inversion (5% of compute) spans $86\% \to 90\%$. This guarantees progress never resets to 0% and never reports early completion.
+       - *Two-Phase Hardware-Aware ETA Engine*:
+         - **Phase 1 (Calibrated Hardware Baseline)**: Before active inference begins, evaluates `DependencyManager.has_nvidia_gpu()`. Applies dedicated local Real-Time Factors: NVIDIA GPU (Kim: 0.15, MDX: 0.30, RoFormer: 0.75; 12–18s warmup) vs. Host CPU (Kim: 1.10, MDX: 2.50, RoFormer: 5.50; 22–35s warmup). Warmup latency is isolated from inference elapsed time ($t_{\text{infer\_start}}$ starts when active chunks arrive), preventing premature countdown collapse to $0\text{s}$ ("Anytime now...") during model weight loading.
+         - **Phase 2 (Active Physical Throughput Sampling)**: Once inference begins ($p_{\text{infer}} \ge 0.03$), samples real host speed $R_{\text{obs}} = \frac{p_{\text{infer}}}{\Delta t_{\text{infer}}}$ and blends it with baseline throughput via dynamic factor $\beta = \min(0.85, 0.2 + 0.65 \times p_{\text{infer}})$ to compute effective rate $R_{\text{eff}} = \beta \cdot R_{\text{obs}} + (1 - \beta) \cdot R_{\text{base}}$. Total remaining time evaluates to $T_{\text{rem}} = \frac{1.0 - p_{\text{infer}}}{R_{\text{eff}}} + T_{\text{remux}}$. Because $p_{\text{infer}}$ aggregates across both passes ($0.0 \to 0.95 \to 1.0$), Pass 2 never resets and avoids exponential extrapolation spikes.
+         - **Stage Allocation Cutting**: Stage completions immediately subtract their allocated duration from the remaining ETA.
    - **Cloud Infrastructure Mechanics**:
      - Creates ephemeral dataset buffer `{username}/earpurifier-audio-buffer-{job_id[:8]}`.
      - Actively polls `api.dataset_status()` every 2 seconds until verified `"ready"` (90s ceiling), eliminating blind sleep latency and unindexed dataset push errors.
@@ -261,8 +266,19 @@ File: `main.py`
 ### 6.1. Local Engine Execution Harness
 Managed by `local_processor.py` and `dependency_manager.py`:
 - **Isolation Boundary**: Runs in a hermetic Python 3.11 environment in `%APPDATA%/EarPurifier/env` provisioned via micromamba.
-- **Hardware Routing**: Queries CUDA availability via Windows driver probe (`nvcuda.dll`) and `nvidia-smi -L` (3-second timeout). Selects PyTorch `cu121` on NVIDIA platforms or `cpu` wheels on non-GPU platforms.
-- **Subprocess Execution**:
+- **Hardware Routing & Dynamic Download Footprint**:
+  - Dynamically evaluates CUDA availability via Windows driver probe (`nvcuda.dll`) and `nvidia-smi -L` (3-second timeout).
+  - *Non-NVIDIA Host (CPU Mode)*: Downloads PyTorch CPU wheels (~196 MB) + environment dependencies for an aggregate download payload of **~350 MB** (~1.3 GB uncompressed on disk).
+  - *NVIDIA Host (CUDA Mode)*: Downloads PyTorch `cu121` wheels (~2.34 GB) + dependencies for an aggregate download payload of **~2.7 GB** (~5.5 GB on disk).
+- **Hermetic Installation Verification & Marker Contract**:
+  - `EngineDownloader` atomically writes a `.engine_installed` marker file inside the environment root strictly after all wheels and entry points verify.
+  - `DependencyManager.has_local_engine()` checks for `python.exe`, `audio-separator.exe`, and `.engine_installed`, preventing interrupted or cancelled downloads from leaving ghost partial environments. A backward-compatibility probe verifies and backfills legacy environments containing `torch` and `audio_separator` in `site-packages`.
+- **Package Pruning & Disk Optimization**:
+  - Prunes redundant `torchvision` and `torchaudio` dependencies, installing only core `torch` and `audio-separator`.
+  - All pip subprocess invocations enforce `--no-cache-dir --disable-pip-version-check`, preventing wheel caching into `%LOCALAPPDATA%`, cutting disk write amplification in half, and preventing Windows Defender scanning saturation.
+  - Removes `check=True` on pip subprocess calls to ensure non-zero exit codes during CUDA installation trigger a clean, logged fallback to CPU wheels rather than raising an uncaught `CalledProcessError`.
+- **Subprocess Execution & CLI Optimization**:
+  - Passes `--single_stem=Vocals` to `audio-separator.exe` (`local_processor.py`), suppressing redundant instrumental WAV generation and saving ~300 MB of intermediate disk I/O and file scan latency per run.
   - Sets `bufsize=1` and `stderr=subprocess.STDOUT` to eliminate OS pipe saturation deadlocks.
   - Prepends isolated environment scripts and MinGW DLL paths to process `PATH`.
   - Registers the `Popen` instance in `process_tracker`.
@@ -340,6 +356,13 @@ File: `media_engine.py`
 
 ---
 
+### 7.5. Subprocess Execution & Abort Mechanics (`_run_ffmpeg_abortable`)
+- **Process Registration**: Subprocesses are registered with `process_tracker.register_process(proc)` so application shutdown cleanly terminates them via `taskkill /F /T /PID`.
+- **Continuous Pipe Draining**: Sets `stdout=subprocess.DEVNULL` and drains `stderr` via continuous 100ms `proc.communicate(timeout=0.1)` slices. This prevents the Windows OS 64 KB kernel pipe buffer from saturating and permanently deadlocking when FFmpeg outputs dense progress telemetry on long media files.
+- **Unbounded Operations**: Default `timeout=None` ensures long-duration media files remux without arbitrary cutoffs, while frequent `abort_check()` polling ensures instantaneous process tree termination when users abort.
+
+---
+
 ## 8. Security, DPAPI & State Persistence Schema
 
 ### 8.1. Windows DPAPI Encryption Architecture
@@ -412,7 +435,7 @@ All updates to `config.json` and `job_state.json` invoke `_atomic_write_json()`:
 | **GCS Signed URL Download Truncation** | Official `api.kernels_output()` truncates partially downloaded files to 0 bytes on `IncompleteRead` retries. | Intercepts direct GCS signed URLs; downloads chunks concurrently across 4 worker threads via HTTP `Range`. | `kaggle_bridge.py` |
 | **GCS `HEAD` Request 404** | Google Cloud Storage rejects HTTP `HEAD` verbs on Kaggle signed URLs with 404/403. | Queries `Content-Length` via an initial streaming `GET` request before dispatching range threads. | `kaggle_bridge.py` |
 | **Silent Cloud GPU $\to$ CPU Fallback** | Dynamic linking errors in ONNX Runtime can cause silent fallback to CPU, burning 25 mins of quota. | Inspects active inference session (`model_run.get_providers()`). Aborts with `RuntimeError` within 5s if CUDA missing. | `worker/worker.py` |
-| **Deadlock on Child Process Pipes** | Unbuffered separate pipes (`stdout`/`stderr`) saturate Windows 64 KB kernel pipe buffers. | Binds `stderr=subprocess.STDOUT` with `bufsize=1` for unified, line-buffered stream draining. | `local_processor.py` |
+| **Deadlock on Child Process Pipes** | Unbuffered separate pipes (`stdout`/`stderr`) saturate Windows 64 KB kernel pipe buffers on long media. | Binds `stderr=subprocess.STDOUT` with `bufsize=1` for line-buffered CLI draining (`local_processor.py`), and sets `stdout=DEVNULL` with continuous non-blocking `communicate(timeout=0.1)` stderr draining in `_run_ffmpeg_abortable` (`media_engine.py`). | `local_processor.py`, `media_engine.py` |
 | **Orphaned Background Workers** | `proc.kill()` on Windows leaves underlying worker processes running in memory. | Executes `taskkill /F /T /PID <pid>` to annihilate the entire process tree down to child leaves. | `process_tracker.py` |
 | **Zero-Duration Audio Destruction** | Corrupt container headers returning `0.0` duration cause `ffmpeg -t 0` to create empty files. | Traps `target_duration <= 0.0` and falls back to a passthrough file copy without trimming. | `media_engine.py` |
 | **Attached Picture Remux False Positives** | Audio files with embedded album art have video streams flagged with `disposition.attached_pic == 1`. | Probing filters out attached picture streams from the video list, treating the file as pure audio. | `media_engine.py` |
