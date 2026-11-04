@@ -18,9 +18,9 @@ from .theme import (
 from .components import (
     SidebarLogo, SidebarNavButton, SidebarThemeButton, EngineTelemetryPill
 )
-from .dialogs import SettingsDialog, AudioTrackSelectDialog
+from .dialogs import SettingsDialog, AudioTrackSelectDialog, PhoneVerificationWarningDialog
 from .job_queue_section import JobQueueSection
-from .overlay_widgets import DownloadOverlayWidget
+from .overlay_widgets import DownloadOverlayWidget, VerificationReminderBanner
 from .update_banner import UpdateBannerWidget
 
 try:
@@ -183,6 +183,10 @@ class MainWindow(QMainWindow):
         self.update_banner.setVisible(False)
         workspace_layout.addWidget(self.update_banner)
 
+        self.verification_banner = VerificationReminderBanner(self)
+        self.verification_banner.setVisible(False)
+        workspace_layout.addWidget(self.verification_banner)
+
         self.stack = QStackedWidget()
 
         self.cloud_section = JobQueueSection("Cloud (Kaggle)", self.queue_manager, self.config)
@@ -233,6 +237,8 @@ class MainWindow(QMainWindow):
             self.local_section.apply_theme(mode)
         if hasattr(self, 'update_banner'):
             self.update_banner.apply_theme(mode)
+        if hasattr(self, 'verification_banner'):
+            self.verification_banner.apply_theme(mode)
         set_native_window_theme(self, mode == ThemeMode.DARK)
 
     def showEvent(self, event):
@@ -277,6 +283,8 @@ class MainWindow(QMainWindow):
             self.local_section.retranslate_ui()
         if hasattr(self, 'update_banner'):
             self.update_banner.retranslate_ui(new_lang)
+        if hasattr(self, 'verification_banner'):
+            self.verification_banner.retranslate_ui(new_lang)
         if hasattr(self, 'engine_overlay') and self.engine_overlay.isVisible():
             engine_size = "~2.7 GB" if DependencyManager.has_nvidia_gpu() else "~350 MB"
             self.engine_overlay.lbl_title.setText(t("engine_title"))
@@ -421,6 +429,7 @@ class MainWindow(QMainWindow):
                 self.cloud_thread.progress_update.connect(self.cloud_section.on_progress_updated)
                 self.cloud_thread.status_update.connect(self.on_thread_status_update)
                 self.cloud_thread.error_job.connect(self.on_job_error)
+                self.cloud_thread.verification_warning.connect(self.on_verification_warning)
                 self.cloud_thread.start()
             else:
                 self.cloud_thread.update_credentials(username, api_key)
@@ -555,6 +564,24 @@ class MainWindow(QMainWindow):
 
     def on_job_error(self, jid: str, error_msg: str):
         QMessageBox.critical(self, t("alert_job_err_title"), t("alert_job_err_msg", error=error_msg))
+
+    def on_verification_warning(self, job_id: str, model_name: str, warning_type: str):
+        if warning_type == "UNVERIFIED":
+            dlg = getattr(self, "_phone_warning_dlg", None)
+            try:
+                if dlg is not None and dlg.isVisible():
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    return
+            except RuntimeError:
+                pass
+
+            self._phone_warning_dlg = PhoneVerificationWarningDialog(model_name, self)
+            self._phone_warning_dlg.finished.connect(lambda: setattr(self, "_phone_warning_dlg", None))
+            self._phone_warning_dlg.show()
+        elif warning_type == "TIMEOUT_OR_ERROR":
+            if hasattr(self, 'verification_banner'):
+                self.verification_banner.show_reminder(model_name)
 
     def start_auto_update_check(self):
         """Spawns non-blocking GitHub release check in background thread."""

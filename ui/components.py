@@ -3,7 +3,7 @@ import math
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QRectF
+from PySide6.QtCore import Qt, Signal, QTimer, QRectF, QPointF
 from PySide6.QtGui import (
     QFont, QColor, QLinearGradient, QPixmap,
     QPainter, QPainterPath, QPen, QBrush
@@ -94,6 +94,34 @@ class VectorAlertBadge(QWidget):
         d = 6
         painter.drawLine(cx - d, cy - d, cx + d, cy + d)
         painter.drawLine(cx + d, cy - d, cx - d, cy + d)
+
+
+class VectorWarningBadge(QWidget):
+    """Circular amber warning badge with vector exclamation mark."""
+    def __init__(self, size: int = 40, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._size = size
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        painter.setBrush(QColor(245, 158, 11, 24))
+        painter.setPen(QPen(QColor(245, 158, 11, 80), 1))
+        painter.drawEllipse(self.rect().adjusted(2, 2, -2, -2))
+
+        pen = QPen(QColor("#f59e0b"), max(1.8, self._size / 18.0), Qt.SolidLine, Qt.RoundCap)
+        painter.setPen(pen)
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        h_line = self._size * 0.22
+        painter.drawLine(QPointF(cx, cy - h_line - 1), QPointF(cx, cy + 1))
+
+        dot_r = max(1.2, self._size / 24.0)
+        painter.setBrush(QColor("#f59e0b"))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPointF(cx, cy + h_line * 0.8), dot_r, dot_r)
 
 
 # ─── 3. Sidebar Native Logo with Version Pill ─────────────────────────────────

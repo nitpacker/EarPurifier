@@ -18,6 +18,7 @@ class JobProcessor(QThread):
     status_update = Signal(str, str) # job_id, new_status
     finished_job = Signal(str) # job_id
     error_job = Signal(str, str) # job_id, error_message
+    verification_warning = Signal(str, str, str) # job_id, model_name, warning_type
 
     def __init__(self, queue_manager: QueueManager, username: str, api_key: str, parent=None):
         super().__init__(parent)
@@ -93,7 +94,13 @@ class JobProcessor(QThread):
                     self.queue_manager.update_job(job_id, {"status": "ERROR"})
                     self.error_job.emit(job_id, str(e))
                     self.status_update.emit(job_id, "ERROR")
-                # Immediately clean up cloud dataset and temp directory on error
+                # Immediately clean up cloud kernel, dataset and temp directory on error
+                kernel_to_clean = getattr(self, "current_kernel_id", None) or job.get("kaggle_kernel_id")
+                if kernel_to_clean and self.kaggle_bridge:
+                    try:
+                        self.kaggle_bridge.cancel_kernel(kernel_to_clean)
+                    except Exception as err:
+                        logger.warning(f"Failed to cancel kernel on job error: {err}")
                 dataset_to_clean = getattr(self, "current_dataset_id", None) or job.get("dataset_id")
                 if dataset_to_clean and self.kaggle_bridge:
                     try:
@@ -160,6 +167,8 @@ class JobProcessor(QThread):
 
     def _handle_abort(self, job_id: str, kernel_id: str, dataset_id: str, temp_dir: str, bridge=None):
         bridge = bridge or self.kaggle_bridge
+        kernel_id = kernel_id or getattr(self, "current_kernel_id", None)
+        dataset_id = dataset_id or getattr(self, "current_dataset_id", None)
         self._log(job_id, "Aborting: Cancelling Kaggle kernel and cleaning up local temporary files...")
         # 1. Cancel/delete Kaggle kernel so it stops consuming GPU quota
         if kernel_id and bridge:
@@ -259,6 +268,23 @@ class JobProcessor(QThread):
 
         # 1. EXTRACTING
         if status in ["PENDING", "EXTRACTING"]:
+            if is_aborted():
+                self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
+                return
+
+            # Quota pre-check for Cloud GPU jobs before local extraction starts
+            model_name = job.get("model", "") or ""
+            is_gpu_model = ("RoFormer" in model_name or "MDX23C" in model_name) and "Kim" not in model_name
+            if job.get("mode", "Cloud (Kaggle)") == "Cloud (Kaggle)" and is_gpu_model:
+                clean_model = "RoFormer" if "RoFormer" in model_name else "MDX23C"
+                quota_res = bridge.check_gpu_quota_status(timeout_seconds=5.0, abort_check=is_aborted)
+                if is_aborted() or quota_res.get("status") == "ABORTED":
+                    self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
+                    return
+                q_status = quota_res.get("status")
+                if q_status in ["UNVERIFIED", "TIMEOUT_OR_ERROR"]:
+                    self.verification_warning.emit(job_id, clean_model, q_status)
+
             if is_aborted():
                 self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                 return
@@ -409,10 +435,10 @@ class JobProcessor(QThread):
                         self._save_kaggle_log(job_id, kernel_id, bridge)
                         break
                     elif k_status == "ERROR":
-                        self._save_kaggle_log(job_id, kernel_id, bridge)
                         if is_aborted():
                             self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                             return
+                        self._save_kaggle_log(job_id, kernel_id, bridge)
                         raise Exception("Kaggle Kernel failed or was cancelled.")
                     
                     if k_status == "QUEUED":

@@ -9,14 +9,15 @@ from .theme import (
     get_scrollbar_qss, get_combobox_qss, get_primary_button_qss, get_checkbox_qss
 )
 from .components import (
-    CleanCloseButton, VectorAlertBadge, SidebarLogo,
+    CleanCloseButton, VectorAlertBadge, VectorWarningBadge, SidebarLogo,
     SidebarNavButton, SidebarThemeButton, EngineTelemetryPill,
     ModernToggleSwitch, StatusGroupHeader
 )
 from .queue_widgets import (
     SegmentedPillSwitcher, FloatingBatchDock, DropZoneWidget
 )
-from .dialogs import SettingsDialog, DeleteConfirmDialog, AudioTrackSelectDialog
+from .dialogs import SettingsDialog, DeleteConfirmDialog, AudioTrackSelectDialog, PhoneVerificationWarningDialog
+from .overlay_widgets import VerificationReminderBanner
 from .job_widget import JobWidget
 from .job_queue_section import JobQueueSection
 from .update_banner import UpdateBannerWidget
@@ -31,10 +32,11 @@ __all__ = [
     "ACCENT_BLUE", "ACCENT_AMBER", "ACCENT_RED",
     "FONT_FAMILY", "FONT_MONO", "SUPPORTED_EXTENSIONS", "get_asset_path",
     "get_scrollbar_qss", "get_combobox_qss", "get_primary_button_qss", "get_checkbox_qss",
-    "CleanCloseButton", "VectorAlertBadge", "SidebarLogo",
+    "CleanCloseButton", "VectorAlertBadge", "VectorWarningBadge", "SidebarLogo",
     "SidebarNavButton", "SidebarThemeButton", "EngineTelemetryPill",
     "ModernToggleSwitch", "StatusGroupHeader",
     "SegmentedPillSwitcher", "FloatingBatchDock", "DropZoneWidget",
-    "SettingsDialog", "DeleteConfirmDialog", "AudioTrackSelectDialog",
+    "SettingsDialog", "DeleteConfirmDialog", "AudioTrackSelectDialog", "PhoneVerificationWarningDialog",
+    "VerificationReminderBanner",
     "JobWidget", "JobQueueSection", "UpdateBannerWidget", "MainWindow"
 ]

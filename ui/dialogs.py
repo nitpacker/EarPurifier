@@ -12,7 +12,7 @@ from .theme import (
     get_combobox_qss, get_checkbox_qss, get_primary_button_qss, get_scrollbar_qss,
     FONT_FAMILY, FONT_MONO
 )
-from .components import VectorAlertBadge, ModernToggleSwitch
+from .components import VectorAlertBadge, VectorWarningBadge, ModernToggleSwitch
 
 try:
     from config_manager import ConfigManager
@@ -592,3 +592,82 @@ class AudioTrackSelectDialog(QDialog):
         for combo in self.combos.values():
             return combo.currentData() if combo.currentData() is not None else 0
         return 0
+
+
+# ─── Phone Verification Warning Dialog (Modeless / Non-Blocking) ───────────────
+
+class PhoneVerificationWarningDialog(QDialog):
+    """Informative, non-blocking warning dialog advising the user that their Kaggle account
+    is not phone-verified and may run exceedingly slowly on CPU."""
+    def __init__(self, model_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("phone_warning_title"))
+        self.setMinimumWidth(460)
+        self.setMaximumWidth(540)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        current_lang = get_current_language()
+        rtl_mode = is_rtl(current_lang)
+        self.setLayoutDirection(Qt.RightToLeft if rtl_mode else Qt.LeftToRight)
+
+        mode = Theme.get_mode()
+        card_bg = Theme.get_token("CARD_BG", mode)
+        card_border = Theme.get_token("CARD_BORDER", mode)
+        text_head = Theme.get_token("TEXT_HEAD", mode)
+        text_body = Theme.get_token("TEXT_BODY", mode)
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {card_bg};
+                border-radius: 12px;
+            }}
+            QLabel {{
+                background: transparent;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(14)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        self.badge = VectorWarningBadge(size=44, parent=self)
+        top_row.addWidget(self.badge)
+
+        msg_box = QVBoxLayout()
+        msg_box.setSpacing(4)
+        self.lbl_title = QLabel(t("phone_warning_header"))
+        self.lbl_title.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {text_head}; background: transparent;")
+        msg_box.addWidget(self.lbl_title)
+        top_row.addLayout(msg_box, 1)
+        layout.addLayout(top_row)
+
+        body_text = t("phone_warning_body", model=model_name)
+        self.lbl_msg = QLabel(body_text)
+        self.lbl_msg.setWordWrap(True)
+        self.lbl_msg.setStyleSheet(f"font-size: 12px; color: {text_body}; line-height: 1.5; background: transparent;")
+        layout.addWidget(self.lbl_msg)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
+
+        self.btn_ok = QPushButton(t("btn_dismiss"))
+        self.btn_ok.setCursor(Qt.PointingHandCursor)
+        self.btn_ok.setStyleSheet(get_primary_button_qss(mode))
+        self.btn_ok.clicked.connect(self.close)
+        self.btn_ok.setDefault(True)
+
+        btn_layout.addWidget(self.btn_ok)
+        layout.addLayout(btn_layout)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        parent = self.parent()
+        if parent and hasattr(parent, "geometry"):
+            p_geo = parent.geometry()
+            self.move(
+                max(0, p_geo.center().x() - self.width() // 2),
+                max(0, p_geo.center().y() - self.height() // 2)
+            )

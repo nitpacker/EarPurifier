@@ -221,6 +221,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "track_active_badge": "محدد",
         "batch_dock_selected": "{count} محدد",
         "batch_dock_selected_zero": "لم يتم تحديد أي عنصر",
+
+        # Cloud Quota Pre-Check & Phone Verification
+        "phone_warning_title": "تنبيه: متطلبات حساب Kaggle",
+        "phone_warning_header": "تنبيه: حساب Kaggle قد لا يكون موثقاً",
+        "phone_warning_body": "يبدو أن حسابك في Kaggle لم يكتمل توثيق رقم الهاتف فيه بعد.\n\nالنموذج المختار ({model}) يتطلب معالج رسومات (GPU)، وبدون توثيق الهاتف ستتم المعالجة على المعالج العادي (CPU) مما قد يستغرق ساعات طويلة جداً أو يتعطل.\n\nيمكنك إلغاء المهمة واختيار نموذج (Kim Vocal 2) من الإعدادات، أو إكمال توثيق رقم هاتفك في موقع Kaggle.",
+        "phone_reminder_title": "تذكير: متطلبات النموذج",
+        "phone_reminder_msg": "تذكير: النموذج المختار ({model}) يتطلب حساب Kaggle موثقاً برقم الهاتف ومتاحاً به رصيد GPU لتجنب التوقف.",
+        "btn_dismiss": "حسناً",
     },
 
     "en": {
@@ -423,6 +431,14 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "track_active_badge": "Active",
         "batch_dock_selected": "{count} selected",
         "batch_dock_selected_zero": "0 items selected",
+
+        # Cloud Quota Pre-Check & Phone Verification
+        "phone_warning_title": "Notice: Kaggle Account Requirements",
+        "phone_warning_header": "Notice: Kaggle Account May Not Be Phone-Verified",
+        "phone_warning_body": "It appears your Kaggle account may not have completed phone verification.\n\nThe selected model ({model}) requires a GPU accelerator. Without phone verification, Kaggle executes on CPU, which may take hours or hang indefinitely.\n\nYou can cancel this job and switch to (Kim Vocal 2) from Settings, or complete phone verification in your Kaggle Account Settings.",
+        "phone_reminder_title": "Reminder: Model Requirements",
+        "phone_reminder_msg": "Reminder: The selected model ({model}) requires a phone-verified Kaggle account with GPU quota to avoid hanging.",
+        "btn_dismiss": "OK",
     }
 }
 

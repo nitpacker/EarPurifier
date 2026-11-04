@@ -1,11 +1,11 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar, QFrame, QDialog, QHBoxLayout
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from .theme import Theme, FONT_FAMILY
-from .components import RotatingSpinner
-from i18n import t, translate_worker_message
+from .components import RotatingSpinner, CleanCloseButton, VectorWarningBadge
+from i18n import t, translate_worker_message, get_current_language, is_rtl
 
 
 class DownloadOverlayWidget(QWidget):
@@ -191,4 +191,101 @@ class CloseActiveJobDialog(QDialog):
         btn_layout.addWidget(self.btn_keep)
         btn_layout.addWidget(self.btn_abort)
         layout.addLayout(btn_layout)
+
+
+class VerificationReminderBanner(QFrame):
+    """
+    Non-invasive notification banner that appears at the top of the canvas
+    when Kaggle GPU accelerator quota cannot be verified or times out.
+    Automatically closes after 20 seconds.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("verificationBanner")
+        self._theme_mode = Theme.get_mode()
+        self._model_name = ""
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.dismiss)
+
+        self.init_ui()
+        self.apply_theme(self._theme_mode)
+        self.setVisible(False)
+
+    def init_ui(self):
+        current_lang = get_current_language()
+        direction = Qt.RightToLeft if is_rtl(current_lang) else Qt.LeftToRight
+        self.setLayoutDirection(direction)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(12)
+
+        # Warning icon indicator
+        self.icon_badge = VectorWarningBadge(size=32, parent=self)
+        layout.addWidget(self.icon_badge, 0, Qt.AlignVCenter)
+
+        # Content layout (Title + Message)
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.lbl_title = QLabel(self)
+        self.lbl_title.setStyleSheet("font-size: 13px; font-weight: 800; background: transparent;")
+        text_layout.addWidget(self.lbl_title)
+
+        self.lbl_msg = QLabel(self)
+        self.lbl_msg.setWordWrap(True)
+        self.lbl_msg.setStyleSheet("font-size: 11.5px; background: transparent;")
+        text_layout.addWidget(self.lbl_msg)
+
+        layout.addLayout(text_layout, 1)
+
+        # Dismiss button
+        self.btn_close = CleanCloseButton(self)
+        self.btn_close.clicked.connect(self.dismiss)
+        layout.addWidget(self.btn_close, 0, Qt.AlignVCenter)
+
+    def show_reminder(self, model_name: str):
+        self._model_name = model_name
+        current_lang = get_current_language()
+        self.setLayoutDirection(Qt.RightToLeft if is_rtl(current_lang) else Qt.LeftToRight)
+        self.lbl_title.setText(t("phone_reminder_title"))
+        self.lbl_msg.setText(t("phone_reminder_msg", model=model_name))
+        self.apply_theme(Theme.get_mode())
+        self.setVisible(True)
+
+        self._timer.stop()
+        self._timer.start(20000)
+
+    def dismiss(self):
+        if self._timer and self._timer.isActive():
+            self._timer.stop()
+        self.setVisible(False)
+
+    def apply_theme(self, mode: str):
+        self._theme_mode = mode
+        card_bg = Theme.get_token("CARD_BG", mode)
+        text_head = Theme.get_token("TEXT_HEAD", mode)
+        text_body = Theme.get_token("TEXT_BODY", mode)
+
+        self.setStyleSheet(f"""
+            QFrame#verificationBanner {{
+                background-color: {card_bg};
+                border: 1px solid #f59e0b;
+                border-radius: 10px;
+                margin: 6px 12px 0px 12px;
+            }}
+        """)
+        self.lbl_title.setStyleSheet(f"font-size: 13px; font-weight: 800; color: {text_head}; background: transparent;")
+        self.lbl_msg.setStyleSheet(f"font-size: 11.5px; color: {text_body}; background: transparent;")
+
+    def retranslate_ui(self, lang: str):
+        self.setLayoutDirection(Qt.RightToLeft if is_rtl(lang) else Qt.LeftToRight)
+        if hasattr(self, 'btn_close'):
+            self.btn_close.retranslate_ui()
+        if self._model_name:
+            self.lbl_title.setText(t("phone_reminder_title"))
+            self.lbl_msg.setText(t("phone_reminder_msg", model=self._model_name))
 

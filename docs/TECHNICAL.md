@@ -1,6 +1,6 @@
 # Technical Architecture
 
-*Verified against codebase (v0.0.2).*
+*Verified against codebase (v0.0.3).*
 
 ---
 
@@ -158,13 +158,14 @@ File: `main.py`
 | `ui/job_queue_section.py`| `JobQueueSection` | Main UI Thread | View filter state, selection mode, batch lists | Invokes `QueueManager` mutations |
 | `ui/job_widget.py` | `JobWidget` | Main UI Thread | Local card presentation, 1-second countdown timer | Local UI timer updates |
 | `ui/components.py` | `SidebarNavButton`, `EngineTelemetryPill`, `RotatingSpinner` | Main UI Thread | Vector painting state, breath timer phase | In-memory canvas rendering |
-| `ui/dialogs.py` | `SettingsDialog`, `DeleteConfirmDialog`, `AudioTrackSelectDialog` | Main UI Thread | Form entries, transient selections | Reads/writes `config.json` via `ConfigManager` |
+| `ui/dialogs.py` | `SettingsDialog`, `DeleteConfirmDialog`, `AudioTrackSelectDialog`, `PhoneVerificationWarningDialog` | Main UI Thread | Form entries, transient selections, modeless warning state | Reads/writes `config.json` via `ConfigManager` |
+| `ui/overlay_widgets.py` | `VerificationReminderBanner` | Main UI Thread | Auto-dismiss timer (20s), banner geometry | Non-blocking inline canvas overlay |
 | `ui/theme.py` | `Theme`, `ThemeMode` | Main UI Thread | Color tokens, QSS templates, font families | Resolves SVG assets on disk |
 | `queue_manager.py` | `QueueManager` | Thread-Safe (Any) | `self.state["jobs"]`, `self._pending_deletions` protected by `threading.RLock` | Atomic read/write `%APPDATA%/.../job_state.json` |
 | `config_manager.py`| `ConfigManager` | Thread-Safe (Any) | Application preferences, encrypted API key | Atomic read/write `%APPDATA%/.../config.json` |
 | `process_tracker.py`| `register_process`, `kill_process_tree`, `cleanup_all_subprocesses` | Thread-Safe (Any) | `_ACTIVE_SUBPROCESSES: Set[Popen]` | Subprocess signals, `taskkill` executions |
-| `processor_thread.py`| `JobProcessor` | Cloud Worker QThread | Active Kaggle kernel ID, retry counters | Network REST calls to Kaggle, temporary audio files |
-| `kaggle_bridge.py` | `KaggleBridge` | Cloud Worker QThread | Disposable dataset metadata, GCS URL tokens | Multi-threaded HTTP Range GET requests, Kaggle SDK |
+| `processor_thread.py`| `JobProcessor` | Cloud Worker QThread | Active Kaggle kernel ID, retry counters, verification warning signals | Network REST calls to Kaggle, temporary audio files |
+| `kaggle_bridge.py` | `KaggleBridge` | Cloud Worker QThread | Disposable dataset metadata, GCS URL tokens, accelerator quota cache | Multi-threaded HTTP Range GET requests, Kaggle SDK, immediate kernel container deletion |
 | `local_processor.py`| `LocalJobProcessor` | Local Worker QThread | Active subprocess handle, progress percentage | Subprocess pipe reading (`stdout`/`stderr`), disk audio |
 | `media_engine.py` | `get_duration`, `probe_container`, `extract_audio`, `remux_media`, `_run_ffmpeg_abortable`, `JobAbortedError` | Worker Thread Context| Stateless functional operations | Spawns `ffmpeg.exe` and `ffprobe.exe` subprocesses |
 | `update_checker.py`| `GitHubUpdateChecker` | Checker QThread | Cached release metadata, SemVer tuples | HTTPS queries to raw manifest and GitHub API |
@@ -229,6 +230,7 @@ File: `main.py`
    - Initial state written atomically to `job_state.json`.
 2. **Extraction (`EXTRACTING`)**:
    - `started_at` ISO-8601 UTC timestamp stamped on the job.
+   - **Accelerator Quota Pre-Check (Cloud Engine)**: When running in `Cloud (Kaggle)` mode with a GPU-dependent model (`RoFormer` or `MDX23C`), `JobProcessor` probes Kaggle accelerator quota via `KaggleBridge.check_gpu_quota_status()` with a strict 5.0-second deadline before extracting audio. If unverified (`has_ever_run == False`), emits `verification_warning` (`"dialog"`) to present a modeless, non-blocking warning explaining GPU phone verification requirements. If the check times out or encounters network errors, emits `verification_warning` (`"banner"`) to surface a 20-second auto-closing reminder banner. Jobs running CPU-compatible models (`Kim Vocal 2`) or executing on `Local Engine` bypass this check entirely.
    - Invokes `media_engine.extract_audio()` to generate a 16-bit 48,000 Hz, 2-channel stereo lossless FLAC file (`-c:a flac -sample_fmt s16 -ar 48000 -ac 2`) in `%APPDATA%/EarPurifier/temp/<job_id>/audio_<job_id[:8]>.flac`.
 3. **AI Separation Phase**:
    - **ETA Engine Mechanics**:
@@ -257,7 +259,7 @@ File: `main.py`
    - **Subprocess & Remote Teardown**:
      - Local Engine: Immediately executes `process_tracker.kill_process_tree()` on `audio-separator.exe` upon detecting abort in the stdout reader.
      - Media Engine: `_run_ffmpeg_abortable()` polls `abort_check()` every 50–100 ms, killing FFmpeg process trees on abort and raising `JobAbortedError`.
-     - Cloud Engine: Cancels remote Kaggle kernel via `api.kernel_cancel()`, executes `delete_dataset_with_retry()` with exponential backoff to cleanly release dataset mounts, purges local temporary working directories, and halts chunk downloading.
+     - Cloud Engine: Immediately halts remote Kaggle worker via deterministic container deletion (`cancel_kernel(kernel_id)` invoking `api.kernels_delete(kernel_id, no_confirm=True)` in ~0.44s) to prevent GPU quota burn, bypassing Kaggle's version concurrency queue delays and eliminating temporary stub overhead, executes `delete_dataset_with_retry()` with exponential backoff to cleanly release dataset mounts, purges local temporary working directories, and halts chunk downloading. Remote log fetching during abort is omitted to eliminate UI delays during cancellation or application shutdown.
 
 ---
 
@@ -290,9 +292,11 @@ Managed by `local_processor.py` and `dependency_manager.py`:
 ### 6.2. Cloud Engine & Kaggle Infrastructure
 Managed by `processor_thread.py`, `kaggle_bridge.py`, and `worker/worker.py`:
 - **Authentication**: Dynamically maps credentials. Tokens prefixed with `KGAT_` are mapped to `KAGGLE_API_TOKEN` (HTTP Bearer Auth); legacy tokens are mapped to `KAGGLE_KEY` (HTTP Basic Auth). Sets `KAGGLE_CONFIG_DIR` to a dummy path to prevent reading stale local config files. Credential updates stage an in-memory dirty flag (`_credentials_dirty`); Kaggle REST client re-initialization occurs exclusively within worker thread context when idle (`not active_cloud`) to eliminate UI thread network freezes and avoid mid-job connection severance.
+- **Accelerator Quota Pre-Flight Inspection**: Inspects user accelerator entitlement via Kaggle REST endpoint `/api/v1/users/{username}/accelerator-quota`. Checks `gpu_quota.has_ever_run` to verify phone number registration required for Kaggle GPU access. Enforces a 5.0-second deadline; on timeout or network error, falls back to non-blocking reminder banners without impeding job execution.
 - **Ephemeral Dataset Architecture**: Each job uses an isolated dataset slug `earpurifier-audio-buffer-<uuid>` containing the 48kHz FLAC stem and `dataset-metadata.json`, actively polled via `api.dataset_status()` until verified `"ready"`.
 - **Ephemeral Dataset Teardown & Backoff**: Dataset deletion on abort or completion calls `delete_dataset_with_retry(dataset_id)`, which applies exponential backoff on HTTP 403 Forbidden / 400 Bad Request to safely wait for Kaggle to unmount datasets from stopping kernels, while treating 404 Not Found as immediate success.
 - **Kernel Injection & Dynamic Timeout**: Modifies `worker/worker.py` in-memory using regex substitutions to bind target model filenames and expected audio stem identifiers. Computes a bounded duration-aware execution timeout (`min(43200, max(7200, duration * 3.0 + 1800))`) passed to `api.kernels_push()`.
+- **Immediate Container Deletion & Quota Teardown**: To cancel in-flight Kaggle jobs and halt GPU quota burn with deterministic sub-second latency, `cancel_kernel(kernel_id)` directly calls `api.kernels_delete(kernel_id, no_confirm=True)` wrapped in idempotent 403 Forbidden / 404 Not Found error handling. This bypasses Kaggle's version concurrency queue delays and disk overhead of cancellation stubs, immediately purging the remote pod and halting GPU quota consumption in ~0.44s.
 - **4-Thread Chunked GCS Downloader**: Bypasses Kaggle SDK output methods. Retrieves direct Google Cloud Storage signed URLs via `ApiListKernelSessionOutputRequest`, determines file size via streaming GET, and downloads across 4 concurrent threads using `Range: bytes=X-Y` requests into `.part0` through `.part3` before sequential stitching. Accepts `abort_check` callback to cleanly stop worker download threads and purge incomplete `.part*` fragments upon user cancellation.
 
 ### 6.3. Master Cache Acceleration (`earpurifier-cloud-assets-v2`)
@@ -445,6 +449,8 @@ All updates to `config.json` and `job_state.json` invoke `_atomic_write_json()`:
 | **Single-Instance Deadlocks** | Second instance attempts to initialize resources or corrupt state files. | Handshake via `QLocalSocket` activates existing instance window and immediately terminates second process via `os._exit(0)`. | `main.py` |
 | **UI Thread Remote Auth Freeze** | Synchronous Kaggle token introspection during "+ Add Media" or Settings save blocks Qt event loop for 2–5s. | Stages credentials in memory; defers `KaggleBridge` instantiation to idle cycles on the worker thread. | `processor_thread.py`, `ui/main_window.py` |
 | **Premature Batch Dequeue (Ghost Job Race)** | Single-pass queueing caused background worker to dequeue single-stream audio jobs while the multi-track dialog blocked the UI. | Enforces 2-pass atomic batch ingestion: probes and resolves track dialogs before any job enters `QueueManager`. | `ui/main_window.py`, `queue_manager.py` |
+| **Unverified Kaggle Account GPU Stall** | Kaggle accounts without phone verification cannot allocate GPUs; kernels requesting GPUs hang in queue indefinitely or crash. | Pre-extraction quota check (`check_gpu_quota_status`) probes `has_ever_run` in <=5s before FLAC extraction. Surfaces a bilingual modeless warning dialog or 20s auto-closing banner advising switch to Kim Vocal 2, without blocking queueing or CPU models. | `kaggle_bridge.py`, `processor_thread.py`, `ui/dialogs.py`, `ui/overlay_widgets.py` |
+| **GPU Quota Burn on Aborted Cloud Kernels** | Pushing cancellation stubs or simply dropping local sockets can queue behind Kaggle's version concurrency, leaving active GPU containers burning quota for minutes. | Employs immediate, deterministic container deletion via `api.kernels_delete(kernel_id, no_confirm=True)` wrapped in idempotent 403/404 exception handling. Terminates remote GPU execution in ~0.44s without disk stub overhead. | `kaggle_bridge.py`, `processor_thread.py` |
 
 ---
 

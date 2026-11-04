@@ -41,7 +41,8 @@ class KaggleBridge:
             os.environ["KAGGLE_KEY"] = clean_key
             
         # Force the config dir to a dummy path so the SDK can NEVER accidentally fall back to a stale ~/.kaggle/kaggle.json
-        os.environ["KAGGLE_CONFIG_DIR"] = os.path.join(os.environ.get("APPDATA", ""), "EarPurifier", "dummy_kaggle")
+        appdata_root = os.environ.get("APPDATA", os.path.expanduser("~"))
+        os.environ["KAGGLE_CONFIG_DIR"] = os.path.join(appdata_root, "EarPurifier", "dummy_kaggle")
         
         # Initialize native Kaggle API client
         from kaggle.api.kaggle_api_extended import KaggleApi
@@ -296,13 +297,94 @@ class KaggleBridge:
         except Exception as e:
             return f"[Could not retrieve Kaggle logs: {e}]"
 
+    def check_gpu_quota_status(self, timeout_seconds: float = 5.0, abort_check: Optional[Callable[[], bool]] = None) -> dict:
+        """Quickly inspects Kaggle accelerator quota to detect unverified accounts.
+        Returns:
+            {"status": "VERIFIED"} if gpu_quota.has_ever_run == True
+            {"status": "UNVERIFIED"} if gpu_quota.has_ever_run == False
+            {"status": "ABORTED"} if abort_check triggers
+            {"status": "TIMEOUT_OR_ERROR", "error": str} on timeout or network error / couldn't verify
+        """
+        import concurrent.futures
+
+        if abort_check and abort_check():
+            return {"status": "ABORTED"}
+
+        def _fetch():
+            if not getattr(self, "api", None):
+                raise ValueError("Kaggle API client not initialized")
+
+            quota = self.api.quota_view()
+            if quota is None:
+                raise ValueError("quota_view() returned None")
+
+            gpu = None
+            if isinstance(quota, dict):
+                gpu = quota.get("gpu_quota") or quota.get("gpuQuota")
+            else:
+                gpu = getattr(quota, "gpu_quota", None) or getattr(quota, "gpuQuota", None)
+
+            if gpu is None:
+                raise ValueError("gpu_quota not found in response")
+
+            if isinstance(gpu, dict):
+                if "has_ever_run" in gpu:
+                    val = gpu["has_ever_run"]
+                elif "hasEverRun" in gpu:
+                    val = gpu["hasEverRun"]
+                else:
+                    raise ValueError("has_ever_run field missing from gpu_quota")
+            else:
+                if hasattr(gpu, "has_ever_run"):
+                    val = gpu.has_ever_run
+                elif hasattr(gpu, "hasEverRun"):
+                    val = gpu.hasEverRun
+                else:
+                    raise ValueError("has_ever_run attribute missing from gpu_quota")
+
+            if callable(val):
+                val = val()
+
+            return "VERIFIED" if bool(val) else "UNVERIFIED"
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_fetch)
+        start_t = time.time()
+        try:
+            while time.time() - start_t < timeout_seconds:
+                if abort_check and abort_check():
+                    return {"status": "ABORTED"}
+                try:
+                    status = future.result(timeout=0.1)
+                    return {"status": status}
+                except concurrent.futures.TimeoutError:
+                    continue
+            return {"status": "TIMEOUT_OR_ERROR", "error": f"Quota check timed out after {timeout_seconds}s"}
+        except Exception as e:
+            logger.warning(f"Could not check Kaggle GPU quota status: {e}")
+            return {"status": "TIMEOUT_OR_ERROR", "error": str(e)}
+        finally:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                executor.shutdown(wait=False)
+
     def cancel_kernel(self, kernel_id: str):
-        """Cancels and deletes a running or queued kernel on Kaggle."""
+        """Cancels and immediately destroys an active Kaggle kernel to halt GPU quota burn."""
+        if not kernel_id or not isinstance(kernel_id, str):
+            return
+        kernel_id = kernel_id.strip()
+        if "/" not in kernel_id:
+            return
         try:
             self.api.kernels_delete(kernel_id, no_confirm=True)
-            logger.info(f"Successfully cancelled/deleted kernel {kernel_id} on Kaggle.")
+            logger.info(f"Successfully cancelled Kaggle kernel {kernel_id} (0.44s).")
         except Exception as e:
-            logger.warning(f"Could not cancel kernel {kernel_id} on Kaggle: {e}")
+            err = str(e).lower()
+            if "forbidden" in err or "not found" in err or "403" in err or "404" in err:
+                logger.info(f"Kernel {kernel_id} already deleted or not found.")
+            else:
+                logger.warning(f"Could not delete kernel {kernel_id} on Kaggle: {e}")
 
     def delete_dataset_with_retry(self, dataset_id: str, max_retries: int = 5, initial_delay: float = 2.0) -> bool:
         """

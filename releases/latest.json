@@ -1,15 +1,15 @@
 {
-  "version": "0.0.2",
-  "release_date": "2026-11-1",
+  "version": "0.0.3",
+  "release_date": "2026-11-05",
   "download_urls": {
-    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2.exe",
-    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2_mac.dmg",
-    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2.AppImage"
+    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3.exe",
+    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3_mac.dmg",
+    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3.AppImage"
   },
-  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.2/EarPurifier0.0.2.exe",
-  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.2",
+  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3.exe",
+  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.3",
   "message": {
-    "ar": "🎉 تحديث هدوء v0.0.2:\n• تسريع وتخفيف حجم المحرك المحلي.\n• تحسينات على آلية حساب الوقت المتبقي (ETA) وشريط التقدم في المعالجة المحلية.\n• تحسينات في واجهة المستخدم والرسائل التوضيحية.",
-    "en": "🎉 EarPurifier v0.0.2 Update:\n• Lighter, faster local engine lifecycle and setup.\n• Two-phase dynamic ETA estimation for local processing.\n• UI improvements in user messages"
+    "ar": "🎉 تحديث هدوء v0.0.3:\n• فحص استباقي غير معطل لحالة توثيق حساب كاجل لتجنب تعليق النماذج السحابية (RoFormer / MDX23C).\n• إلغاء فوري فائق السرعة (<0.5 ثانية) للمهام السحابية لمنع هدر رصيد معالج الرسومات (GPU Quota).\n• تنبيهات ذكية ثنائية اللغة وشريط إشعارات يختفي تلقائياً عند تعذر الفحص.",
+    "en": "🎉 EarPurifier v0.0.3 Update:\n• Pre-flight non-blocking Kaggle GPU quota check to prevent cloud job stalls on unverified accounts.\n• Instant (<0.5s) cloud job cancellation to halt GPU quota burn and tear down remote pods immediately.\n• Responsive bilingual warning dialogs and auto-dismissing reminder banners."
   }
 }
