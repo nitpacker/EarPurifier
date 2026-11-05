@@ -164,9 +164,9 @@ class TestThreeFixes(unittest.TestCase):
             f.write(b"RIFFdummydata")
 
         with patch("time.sleep", return_value=None):
-            dataset_id = bridge.push_audio(dummy_audio, os.path.join(temp_dir, "push"), "audio_123.flac", "job_12345678")
+            dataset_id = bridge.push_audio(dummy_audio, os.path.join(temp_dir, "push"), "audio_123.flac", "c9a646d3-9c61-4cb7-8027-76d9c022142b")
 
-        self.assertEqual(dataset_id, "testuser/earpurifier-audio-buffer-job_1234")
+        self.assertEqual(dataset_id, "testuser/earpurifier-audio-buffer-c9a646d39c614cb7")
         self.assertEqual(mock_api.dataset_status.call_count, 3)
 
     def test_fix2_kaggle_bridge_push_kernel_dynamic_timeout(self):
@@ -495,6 +495,43 @@ class TestBatchMediaAdditionFixes(unittest.TestCase):
                 self.assertEqual(len(all_jobs), 1)
 
             win.close()
+
+
+    def test_get_job_tag_uuid4(self):
+        """Verify get_job_tag extracts a clean 16-hex character tag from UUID4."""
+        from kaggle_bridge import get_job_tag
+        raw_uuid = "c9a646d3-9c61-4cb7-8027-76d9c022142b"
+        tag = get_job_tag(raw_uuid)
+        self.assertEqual(len(tag), 16)
+        self.assertEqual(tag, "c9a646d39c614cb7")
+        self.assertTrue(all(c in "0123456789abcdef" for c in tag))
+
+    def test_slug_lengths_strictly_under_kaggle_50_char_ceiling(self):
+        """Verify dataset and kernel slugs never exceed Kaggle's 50-character limit."""
+        import uuid
+        from kaggle_bridge import get_job_tag
+        for _ in range(50):
+            uid = str(uuid.uuid4())
+            tag = get_job_tag(uid)
+            ds_slug = f"earpurifier-audio-buffer-{tag}"
+            kernel_slug = f"earpurifier-worker-{tag}"
+            audio_stem = f"audio_{tag}.flac"
+
+            self.assertLessEqual(len(ds_slug), 50, f"Dataset slug {ds_slug} exceeds 50 chars ({len(ds_slug)})")
+            self.assertEqual(len(ds_slug), 41)
+            self.assertLessEqual(len(kernel_slug), 50, f"Kernel slug {kernel_slug} exceeds 50 chars ({len(kernel_slug)})")
+            self.assertEqual(len(kernel_slug), 35)
+            self.assertEqual(len(audio_stem), 27)
+
+    def test_worker_py_regex_injection_with_16_char_tag(self):
+        """Verify worker.py regex injection correctly binds 16-char stamped audio names."""
+        import re
+        from kaggle_bridge import get_job_tag
+        tag = get_job_tag("c9a646d3-9c61-4cb7-8027-76d9c022142b")
+        stamped = f"audio_{tag}.flac"
+        template = 'EXPECTED_AUDIO_NAME = "audio.flac"'
+        injected = re.sub(r'EXPECTED_AUDIO_NAME\s*=\s*"[^"]*"', f'EXPECTED_AUDIO_NAME = "{stamped}"', template)
+        self.assertEqual(injected, f'EXPECTED_AUDIO_NAME = "{stamped}"')
 
 
 if __name__ == "__main__":

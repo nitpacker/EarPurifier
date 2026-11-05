@@ -231,7 +231,7 @@ File: `main.py`
 2. **Extraction (`EXTRACTING`)**:
    - `started_at` ISO-8601 UTC timestamp stamped on the job.
    - **Accelerator Quota Pre-Check (Cloud Engine)**: When running in `Cloud (Kaggle)` mode with a GPU-dependent model (`RoFormer` or `MDX23C`), `JobProcessor` probes Kaggle accelerator quota via `KaggleBridge.check_gpu_quota_status()` with a strict 5.0-second deadline before extracting audio. If unverified (`has_ever_run == False`), emits `verification_warning` (`"dialog"`) to present a modeless, non-blocking warning explaining GPU phone verification requirements. If the check times out or encounters network errors, emits `verification_warning` (`"banner"`) to surface a 20-second auto-closing reminder banner. Jobs running CPU-compatible models (`Kim Vocal 2`) or executing on `Local Engine` bypass this check entirely.
-   - Invokes `media_engine.extract_audio()` to generate a 16-bit 48,000 Hz, 2-channel stereo lossless FLAC file (`-c:a flac -sample_fmt s16 -ar 48000 -ac 2`) in `%APPDATA%/EarPurifier/temp/<job_id>/audio_<job_id[:8]>.flac`.
+   - Invokes `media_engine.extract_audio()` to generate a 16-bit 48,000 Hz, 2-channel stereo lossless FLAC file (`-c:a flac -sample_fmt s16 -ar 48000 -ac 2`) in `%APPDATA%/EarPurifier/temp/<job_id>/audio_<tag_16>.flac`.
 3. **AI Separation Phase**:
    - **ETA Engine Mechanics**:
      - **Cloud Path (`UPLOADING` $\to$ `PROCESSING_CLOUD` $\to$ `DOWNLOADING`)**: ETA is calculated from empirical Real-Time Factors ($\text{RTF}_{\text{model}}$) on Kaggle T4 GPUs: Kim Vocal 2 ($\text{RTF} = 0.135$, ~7.5x real-time), MDX23C ($\text{RTF} = 0.270$, ~3.7x real-time), and Band-Split RoFormer ($\text{RTF} = 0.680$, ~1.45x real-time), plus bounded stage overheads for extraction, upload, container boot, download, and hardware remuxing. As stages complete, remaining ETA dynamically clamps to the sum of remaining phases.
@@ -242,7 +242,7 @@ File: `main.py`
          - **Phase 2 (Active Physical Throughput Sampling)**: Once inference begins ($p_{\text{infer}} \ge 0.03$), samples real host speed $R_{\text{obs}} = \frac{p_{\text{infer}}}{\Delta t_{\text{infer}}}$ and blends it with baseline throughput via dynamic factor $\beta = \min(0.85, 0.2 + 0.65 \times p_{\text{infer}})$ to compute effective rate $R_{\text{eff}} = \beta \cdot R_{\text{obs}} + (1 - \beta) \cdot R_{\text{base}}$. Total remaining time evaluates to $T_{\text{rem}} = \frac{1.0 - p_{\text{infer}}}{R_{\text{eff}}} + T_{\text{remux}}$. Because $p_{\text{infer}}$ aggregates across both passes ($0.0 \to 0.95 \to 1.0$), Pass 2 never resets and avoids exponential extrapolation spikes.
          - **Stage Allocation Cutting**: Stage completions immediately subtract their allocated duration from the remaining ETA.
    - **Cloud Infrastructure Mechanics**:
-     - Creates ephemeral dataset buffer `{username}/earpurifier-audio-buffer-{job_id[:8]}`.
+     - Creates ephemeral dataset buffer `{username}/earpurifier-audio-buffer-{tag_16}`.
      - Actively polls `api.dataset_status()` every 2 seconds until verified `"ready"` (90s ceiling), eliminating blind sleep latency and unindexed dataset push errors.
      - Pushes worker kernel with injected model specifications and dynamic duration-aware session timeout (`\min(43200, \max(7200, \text{duration} \times 3.0 + 1800))`).
      - Polls status every 30 seconds (sliced into 1-second ticks for responsive abort handling). If `QUEUED` exceeds 2 minutes, dispatches `QUEUE_CONGESTED` telemetry, pausing the client-side ETA countdown until `RUNNING`.

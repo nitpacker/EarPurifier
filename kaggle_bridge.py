@@ -17,6 +17,11 @@ os.environ["CURL_CA_BUNDLE"] = certifi.where()
 
 logger = logging.getLogger(__name__)
 
+def get_job_tag(job_id: str) -> str:
+    """Extracts a sanitized 16-hex character tag (64 bits of entropy) from a job ID."""
+    clean = str(job_id).replace("-", "").strip()
+    return clean[:16] if len(clean) >= 16 else clean
+
 class KaggleError(Exception):
     pass
 
@@ -81,7 +86,7 @@ class KaggleBridge:
         dest_path = os.path.join(temp_dir, stamped_name)
         shutil.copy(audio_path, dest_path)
         
-        job_slug = f"earpurifier-audio-buffer-{job_id[:8]}"
+        job_slug = f"earpurifier-audio-buffer-{get_job_tag(job_id)}"
         dataset_id = f"{self.username}/{job_slug}"
         
         metadata = {

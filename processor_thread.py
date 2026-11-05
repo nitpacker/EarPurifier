@@ -5,11 +5,11 @@ from PySide6.QtCore import QThread, Signal
 try:
     from .queue_manager import QueueManager
     from .media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
-    from .kaggle_bridge import KaggleBridge
+    from .kaggle_bridge import KaggleBridge, get_job_tag
 except ImportError:
     from queue_manager import QueueManager
     from media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
-    from kaggle_bridge import KaggleBridge
+    from kaggle_bridge import KaggleBridge, get_job_tag
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ class JobProcessor(QThread):
                 logger.warning(f"Could not determine media duration: {e}")
         
         # Use a job-stamped audio filename so Kaggle NEVER serves a stale file from a previous job
-        job_tag = job_id[:8]
+        job_tag = get_job_tag(job_id)
         stamped_audio_name = f"audio_{job_tag}.flac"
         
         flac_path = job.get("flac_audio")
@@ -313,7 +313,7 @@ class JobProcessor(QThread):
             self._log(job_id, "Pushing audio to Kaggle dataset...")
             
             # Retrieve the stamped name (may already be in job if resuming)
-            stamped_audio_name = job.get("stamped_audio_name", f"audio_{job_id[:8]}.flac")
+            stamped_audio_name = job.get("stamped_audio_name", f"audio_{get_job_tag(job_id)}.flac")
             
             upload_success = False
             for up_attempt in range(5):
@@ -384,7 +384,7 @@ class JobProcessor(QThread):
                     self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                     return
                 try:
-                    kernel_id = bridge.push_kernel(worker_dir, f"earpurifier-worker-{job_id[:8]}", dataset_id, duration=job.get("duration", 0.0))
+                    kernel_id = bridge.push_kernel(worker_dir, f"earpurifier-worker-{get_job_tag(job_id)}", dataset_id, duration=job.get("duration", 0.0))
                     if is_aborted():
                         self._handle_abort(job_id, kernel_id, dataset_id, temp_dir, bridge)
                         return
