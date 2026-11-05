@@ -1,15 +1,15 @@
 {
-  "version": "0.0.3",
+  "version": "1.0.0",
   "release_date": "2026-11-05",
   "download_urls": {
-    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3.exe",
-    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3_mac.dmg",
-    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3.AppImage"
+    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0.exe",
+    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0_mac.dmg",
+    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0.AppImage"
   },
-  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v0.0.3/EarPurifier0.0.3.exe",
-  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.3",
+  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0.exe",
+  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v1.0.0",
   "message": {
-    "ar": "🎉 تحديث هدوء v0.0.3:\n• فحص استباقي لحالة توثيق حساب كاجل لتجنب تعليق النماذج السحابية (RoFormer / MDX23C).\n• إلغاء فوري فائق السرعة (<0.5 ثانية) للمهام السحابية لمنع هدر رصيد معالج الرسومات (GPU Quota).\n• تنبيهات ذكية ثنائية اللغة وشريط إشعارات يختفي تلقائياً عند تعذر الفحص.",
-    "en": "🎉 EarPurifier v0.0.3 Update:\n• Pre-flight non-blocking Kaggle GPU quota check to prevent cloud job stalls on unverified accounts.\n• Fixing Download Model button label in local mode."
+    "ar": "الإصدار الأولي من هدوء",
+    "en": "First stable release"
   }
 }
