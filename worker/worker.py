@@ -74,7 +74,7 @@ def run_separation():
     )
 
     # Load model (will download if not in model_dir)
-    separator.load_model(model_filename="Kim_Vocal_2.onnx")
+    separator.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
 
     # Guard: fail fast if GPU is unavailable rather than silently crawling on CPU
     import onnxruntime as ort

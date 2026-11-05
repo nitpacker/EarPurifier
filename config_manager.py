@@ -107,7 +107,7 @@ class ConfigManager:
                     data = json.load(f)
                     # Merge with defaults
                     for k, v in self.default_config.items():
-                        if k not in data:
+                        if k not in data or (k == "local_model" and not data.get("local_model")):
                             data[k] = v
                     if data.get("kaggle_api_key"):
                         data["kaggle_api_key"] = _unprotect_secret(data["kaggle_api_key"])
@@ -115,7 +115,14 @@ class ConfigManager:
             except Exception as e:
                 logger.error(f"Failed to load config: {e}")
                 return self.default_config.copy()
-        return self.default_config.copy()
+
+        # Fresh startup: instantiate and persist default config immediately
+        default_cfg = self.default_config.copy()
+        try:
+            _atomic_write_json(self.config_file, default_cfg, indent=4)
+        except Exception as e:
+            logger.warning(f"Could not write initial config: {e}")
+        return default_cfg
 
     def save_config(self, new_config: dict):
         self.config.update(new_config)

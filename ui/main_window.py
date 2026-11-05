@@ -357,6 +357,7 @@ class MainWindow(QMainWindow):
             self.engine_overlay.setVisible(False)
             self.local_section.setGraphicsEffect(None)
             self.local_section.setEnabled(True)
+            self.local_section.update_model_button_state()
         else:
             self.engine_overlay.set_error(t("engine_status_failed", message=message))
 
@@ -508,7 +509,7 @@ class MainWindow(QMainWindow):
                 return
 
             model_selection = self.config.get("local_model", "")
-            display_model = "RoFormer" if "RoFormer" in model_selection else ("MDX23C" if "MDX23C" in model_selection else "Kim Vocal 2")
+            display_model = "MDX23C" if "MDX23C" in model_selection else ("Kim Vocal 2" if "Kim" in model_selection else "RoFormer")
 
             probed_files = []
             multi_track_files = {}

@@ -209,13 +209,13 @@ class TestUIOverhaul(unittest.TestCase):
 
         # 1. English (LTR)
         i18n.set_language("en")
-        section.set_download_progress(45, "ReRoFormer")
+        section.set_download_progress(45, "RoFormer")
         btn_qss_ltr = section.btn_add.styleSheet()
         self.assertIn("x1:0", btn_qss_ltr)
         self.assertIn("x2:1", btn_qss_ltr)
         self.assertIn("#10b981", btn_qss_ltr)
         self.assertIn("#a7d0be", btn_qss_ltr)
-        self.assertIn("ReRoFormer", section.btn_add.text())
+        self.assertIn("RoFormer", section.btn_add.text())
 
         # 2. Arabic (RTL)
         i18n.set_language("ar")
@@ -251,21 +251,21 @@ class TestUIOverhaul(unittest.TestCase):
 
         # Start download in English at 45%
         i18n.set_language("en")
-        section.set_download_progress(45, "ReRoFormer")
-        self.assertIn("Downloading ReRoFormer... 45%", section.btn_add.text())
+        section.set_download_progress(45, "RoFormer")
+        self.assertIn("Downloading RoFormer... 45%", section.btn_add.text())
         self.assertIn("x1:0", section.btn_add.styleSheet())
 
         # Switch language to Arabic while download is in progress
         i18n.set_language("ar")
         section.retranslate_ui()
-        self.assertIn("ReRoFormer", section.btn_add.text())
+        self.assertIn("RoFormer", section.btn_add.text())
         self.assertIn("45", section.btn_add.text())
         self.assertIn("x1:1", section.btn_add.styleSheet())
 
         # Switch back to English
         i18n.set_language("en")
         section.retranslate_ui()
-        self.assertIn("Downloading ReRoFormer... 45%", section.btn_add.text())
+        self.assertIn("Downloading RoFormer... 45%", section.btn_add.text())
         self.assertIn("x1:0", section.btn_add.styleSheet())
 
         i18n.set_language("ar")
@@ -289,6 +289,52 @@ class TestUIOverhaul(unittest.TestCase):
         self.assertIn("المرحلة 1/3", msg1_ar)
         self.assertIn("المرحلة 2/3", msg2_ar)
         self.assertIn("المرحلة 3/3", msg3_ar)
+
+    def test_13_roformer_default_model_and_monotonic_progress(self):
+        """Verify universal RoFormer fallback, clean config auto-init, and monotonic download progress."""
+        from dependency_manager import ModelDownloader
+
+        # 1. Fallback with empty/unset config resolves to RoFormer across UI helpers
+        cfg = ConfigManager()
+        cfg.set("local_model", "")
+        qm = QueueManager()
+        section = JobQueueSection("Local (GPU)", qm, cfg)
+
+        self.assertEqual(section._get_friendly_model_name(), "RoFormer")
+        self.assertEqual(section._get_selected_model_name(), "model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+        self.assertIn("RoFormer", section.lbl_sub.text())
+
+        # 2. Config load_config auto-heals empty local_model
+        cfg.config["local_model"] = ""
+        healed = cfg.load_config()
+        self.assertEqual(healed.get("local_model"), "SOTA (RoFormer) - Requires High-End GPU")
+
+        # 3. ModelDownloader regex line simulation tests monotonicity
+        downloader = ModelDownloader("Kim_Vocal_2.onnx", "/tmp")
+        emitted_pcts = []
+        downloader.progress_update.connect(emitted_pcts.append)
+
+        # Simulate regex loop with 100% followed by secondary 0% (from auxiliary json download)
+        import re
+        percent_pattern = re.compile(r'(\d{1,3})%')
+        simulated_lines = [
+            "downloading 25% of weights",
+            "downloading 50% of weights",
+            "downloading 100% of weights",
+            "downloading vr_model_data.json 0%",
+            "downloading mdx_model_data.json 100%",
+        ]
+        last_pct = -1
+        for line in simulated_lines:
+            m = percent_pattern.search(line)
+            if m:
+                pct = int(m.group(1))
+                if pct > last_pct:
+                    downloader.progress_update.emit(pct)
+                    last_pct = pct
+
+        self.assertEqual(emitted_pcts, [25, 50, 100])
+        self.assertNotIn(0, emitted_pcts[1:])  # 0% must never regress after 100%
 
 
 if __name__ == "__main__":

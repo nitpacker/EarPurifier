@@ -482,39 +482,39 @@ class JobQueueSection(QWidget):
         model_selection = self.config.get("local_model", "")
         model_file = self._get_selected_model_name()
         combined = f"{model_selection} {model_file}".lower()
-        if "roformer" in combined:
-            return "ReRoFormer"
-        elif "mdx23c" in combined:
+        if "mdx23c" in combined:
             return "MDX23C"
-        else:
+        elif "kim" in combined:
             return "Kim Vocal 2"
+        else:
+            return "RoFormer"
 
     def _get_selected_model_name(self) -> str:
         model_selection = self.config.get("local_model", "")
-        if "RoFormer" in model_selection:
-            return "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
-        elif "MDX23C" in model_selection:
+        if "MDX23C" in model_selection:
             return "MDX23C-8KFFT-InstVoc_HQ.ckpt"
-        else:
+        elif "Kim" in model_selection:
             return "Kim_Vocal_2.onnx"
+        else:
+            return "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 
     def update_model_button_state(self):
         if "Local" not in self.mode:
             return
         model_name = self._get_selected_model_name()
         friendly_name = self._get_friendly_model_name()
-        if "roformer" in model_name.lower():
-            display_name = t("local_engine_sub_roformer")
-            size_txt = "~250 MB"
-            subfolder = "RoFormer"
-        elif "mdx23c" in model_name.lower():
+        if "mdx23c" in model_name.lower():
             display_name = t("local_engine_sub_mdx23c")
             size_txt = "~150 MB"
             subfolder = "MDX23C"
-        else:
+        elif "kim" in model_name.lower():
             display_name = t("local_engine_sub_kim")
             size_txt = "~110 MB"
             subfolder = "Kim_Vocal_2"
+        else:
+            display_name = t("local_engine_sub_roformer")
+            size_txt = "~250 MB"
+            subfolder = "RoFormer"
 
         self._model_size_txt = size_txt
         self._model_friendly_name = friendly_name
@@ -527,10 +527,8 @@ class JobQueueSection(QWidget):
             self.btn_add.setText(t("btn_add_media"))
             self._model_needs_download = False
             self.reset_download_progress()
-        elif self.btn_add.isEnabled():
-            self.btn_add.setText(t("btn_download_model", model=friendly_name, size=size_txt))
-            self._model_needs_download = True
         else:
+            self.btn_add.setText(t("btn_download_model", model=friendly_name, size=size_txt))
             self._model_needs_download = True
 
     def set_download_progress(self, pct: int, model_name: str = ""):
@@ -572,6 +570,7 @@ class JobQueueSection(QWidget):
         """)
 
     def reset_download_progress(self):
+        self._current_download_pct = 0
         self.btn_add.setStyleSheet(get_primary_button_qss(self._theme_mode))
 
     def _on_add_clicked(self):

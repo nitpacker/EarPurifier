@@ -358,12 +358,12 @@ class JobProcessor(QThread):
             
             # Use the model specifically captured when this job was queued
             model_selection = job.get("model", "")
-            if "RoFormer" in model_selection:
-                c_model = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
-            elif "MDX23C" in model_selection:
+            if "MDX23C" in model_selection:
                 c_model = "MDX23C-8KFFT-InstVoc_HQ.ckpt"
-            else:
+            elif "Kim" in model_selection:
                 c_model = "Kim_Vocal_2.onnx"
+            else:
+                c_model = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
                 
             worker_path = os.path.join(worker_dir, "worker.py")
             with open(worker_path, "r", encoding="utf-8") as f:

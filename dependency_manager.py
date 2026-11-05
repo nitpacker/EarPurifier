@@ -340,7 +340,7 @@ print("SUCCESS_DOWNLOAD")
                     if match:
                         try:
                             pct = int(match.group(1))
-                            if pct != last_pct:
+                            if pct > last_pct:
                                 self.progress_update.emit(pct)
                                 self.status_update.emit(f"Downloading... {pct}%")
                                 last_pct = pct

@@ -155,15 +155,15 @@ class LocalJobProcessor(QThread):
             
             # Map selected model from the specific job
             model_selection = job.get("model", "")
-            if "RoFormer" in model_selection:
-                model_name = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
-                subfolder = "RoFormer"
-            elif "MDX23C" in model_selection:
+            if "MDX23C" in model_selection:
                 model_name = "MDX23C-8KFFT-InstVoc_HQ.ckpt"
                 subfolder = "MDX23C"
-            else:
+            elif "Kim" in model_selection:
                 model_name = "Kim_Vocal_2.onnx"
                 subfolder = "Kim_Vocal_2"
+            else:
+                model_name = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+                subfolder = "RoFormer"
                 
             models_dir = os.path.join(self.config.appdata_dir, "models", subfolder)
             os.makedirs(models_dir, exist_ok=True)
