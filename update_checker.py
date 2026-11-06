@@ -23,18 +23,15 @@ MANIFEST_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_RE
 CHECK_INTERVAL_SECONDS = 86400  # 24 hours
 
 
-def get_current_os() -> str:
-    """
-    Detects current operating system.
-    Returns: 'windows', 'macos', or 'linux'.
-    """
-    if sys.platform.startswith("win"):
-        return "windows"
-    elif sys.platform == "darwin":
-        return "macos"
-    elif sys.platform.startswith("linux"):
+try:
+    from system_utils import get_current_os
+except ImportError:
+    def get_current_os() -> str:
+        if sys.platform.startswith("win"):
+            return "windows"
+        elif sys.platform == "darwin":
+            return "macos"
         return "linux"
-    return "windows"
 
 
 # ─── Semantic Version Parsing & Comparison ────────────────────────────────────

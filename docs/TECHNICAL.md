@@ -367,18 +367,27 @@ File: `media_engine.py`
 
 ---
 
-## 8. Security, DPAPI & State Persistence Schema
+## 8. Security, Credential Protection & State Persistence Schema
 
-### 8.1. Windows DPAPI Encryption Architecture
+### 8.1. Cross-Platform Native Credential Protection Architecture
 File: `config_manager.py`
-- **Native Implementation**: Invokes `CryptProtectData` and `CryptUnprotectData` via `ctypes.windll.crypt32`.
-- **Entropy & Description**: Tagged with description string `"EarPurifierKey"`.
-- **Memory Safety**: Invokes `ctypes.windll.kernel32.LocalFree` on output data pointers immediately after reading byte arrays, preventing native Windows heap leaks.
-- **Prefix Format**: Encrypted strings are stored as Base64 with prefix:
-  `"enc:" + base64.b64encode(cipher_bytes).decode("ascii")`
+- **Windows (win32)**:
+  - Invokes `CryptProtectData` and `CryptUnprotectData` via `ctypes.windll.crypt32`.
+  - Tagged with description string `"EarPurifierKey"`.
+  - Native Memory Safety: Invokes `ctypes.windll.kernel32.LocalFree` on output data pointers immediately after reading byte arrays, preventing native Windows heap leaks.
+  - Stored format: `"enc:" + base64.b64encode(cipher_bytes).decode("ascii")`.
+- **macOS (darwin) & Linux (linux)**:
+  - High-assurance AES-256-GCM authenticated encryption via `cryptography.hazmat.primitives.ciphers.aead.AESGCM`.
+  - Machine Key: 256-bit random key persisted at `~/.local/share/EarPurifier/.device_key` or `~/Library/Application Support/EarPurifier/.device_key` with strict `0600` POSIX file permissions.
+  - Stored format: `"enc:gcm:" + base64.b64encode(nonce + ciphertext).decode("ascii")`.
+- **Cross-Platform AppData Resolution (`system_utils.py`)**:
+  - Windows: `%APPDATA%/EarPurifier` (e.g., `C:/Users/<user>/AppData/Roaming/EarPurifier`).
+  - macOS: `~/Library/Application Support/EarPurifier`.
+  - Linux: `$XDG_DATA_HOME/EarPurifier` (defaults to `~/.local/share/EarPurifier`).
+  - Default Output Folder: `~/Desktop/EarPurifier_Output` on macOS/Linux and Windows development; `<exe_dir>/output` on frozen portable Windows installations.
 
 ### 8.2. Configuration Schema (`config.json`)
-Stored at `%APPDATA%/EarPurifier/config.json`:
+Stored at `<app_data_dir>/config.json`:
 ```json
 {
   "kaggle_username": "username_string",

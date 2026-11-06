@@ -183,12 +183,18 @@ class LocalJobProcessor(QThread):
             
             # Direct stderr into stdout to form a single stream and avoid pipe buffer deadlocks
             kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
-            if hasattr(subprocess, "CREATE_NO_WINDOW"):
-                kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+            try:
+                from system_utils import get_subprocess_spawn_kwargs
+            except ImportError:
+                from .system_utils import get_subprocess_spawn_kwargs
+            kwargs.update(get_subprocess_spawn_kwargs())
                 
             env = os.environ.copy()
             env_dir = DependencyManager.get_env_dir()
-            env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
+            if sys.platform == "win32":
+                env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
+            else:
+                env["PATH"] = f"{os.path.join(env_dir, 'bin')}{os.pathsep}{env.get('PATH', '')}"
                 
             self.current_process = subprocess.Popen(cmd, env=env, **kwargs)
             try:
@@ -237,7 +243,7 @@ class LocalJobProcessor(QThread):
             full_output = "".join(captured_output)
 
             if process.returncode != 0:
-                if "DLL load failed" in full_output:
+                if sys.platform == "win32" and "DLL load failed" in full_output:
                     error_msg = (
                         "Missing Microsoft Visual C++ Redistributable.\n"
                         "Please download and install it from Microsoft:\n"

@@ -21,9 +21,11 @@ from .dialogs import DeleteConfirmDialog
 from .job_widget import JobWidget
 
 try:
+    from system_utils import reveal_in_file_manager, open_directory
     from queue_manager import QueueManager
     from config_manager import ConfigManager
 except ImportError:
+    from src.system_utils import reveal_in_file_manager, open_directory
     from src.queue_manager import QueueManager
     from src.config_manager import ConfigManager
 
@@ -285,7 +287,7 @@ class JobQueueSection(QWidget):
         try:
             out_dir = self.config.get_output_folder(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             if os.path.exists(out_dir):
-                os.startfile(out_dir)
+                open_directory(out_dir)
         except Exception:
             pass
 
@@ -295,13 +297,7 @@ class JobQueueSection(QWidget):
             return
         out_media = job.get("output_media") or job.get("output_video")
         if out_media and os.path.exists(out_media):
-            try:
-                subprocess.run(["explorer.exe", "/select,", os.path.normpath(out_media)])
-            except Exception:
-                try:
-                    os.startfile(os.path.dirname(out_media))
-                except Exception:
-                    pass
+            reveal_in_file_manager(out_media)
         else:
             self._open_output_folder()
 

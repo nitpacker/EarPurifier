@@ -23,10 +23,11 @@ from ui.theme import get_asset_path
 from ui.main_window import MainWindow
 
 # ─── Windows Taskbar AppUserModelID (Ensures icon appears in Taskbar) ─────────
-try:
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EarPurifier.SproutAudio.Studio.2.0")
-except Exception:
-    pass
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EarPurifier.SproutAudio.Studio.2.0")
+    except Exception:
+        pass
 
 
 # ─── Global Uncaught Exception Trap ───────────────────────────────────────────
@@ -57,13 +58,14 @@ sys.excepthook = handle_uncaught_exception
 # ─── Main Application Bootstrap ───────────────────────────────────────────────
 def main():
     # ── High-DPI Display Attributes & Per-Monitor DPI Awareness ──
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
+    if sys.platform == "win32":
         try:
-            ctypes.windll.user32.SetProcessDPIAware()
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
-            pass
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
 
     if hasattr(Qt, "AA_EnableHighDpiScaling"):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
@@ -73,7 +75,11 @@ def main():
     app = QApplication(sys.argv)
 
     # ── Single-Instance Enforcement via Qt Local IPC ──
-    server_name = "EarPurifier_SingleInstance_IPC"
+    if sys.platform == "win32":
+        server_name = "EarPurifier_SingleInstance_IPC"
+    else:
+        uid = getattr(os, "getuid", lambda: "user")()
+        server_name = f"EarPurifier_SingleInstance_IPC_{uid}"
     socket = QLocalSocket()
     socket.connectToServer(server_name)
     if socket.waitForConnected(500):
@@ -93,10 +99,12 @@ def main():
     # ── Window & App Icon ──
     logo_ico = get_asset_path("logo.ico")
     logo_png = get_asset_path("logo.png")
-    if os.path.exists(logo_ico):
-        app.setWindowIcon(QIcon(logo_ico))
-    elif os.path.exists(logo_png):
-        app.setWindowIcon(QIcon(logo_png))
+    if sys.platform == "win32":
+        icon_path = logo_ico if os.path.exists(logo_ico) else logo_png
+    else:
+        icon_path = logo_png if os.path.exists(logo_png) else logo_ico
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     # ── Main Window Instantiation ──
     window = MainWindow()

@@ -73,10 +73,12 @@ class MainWindow(QMainWindow):
         # Set Multi-resolution Application Icon
         logo_ico = get_asset_path("logo.ico")
         logo_png = get_asset_path("logo.png")
-        if os.path.exists(logo_ico):
-            self.setWindowIcon(QIcon(logo_ico))
-        elif os.path.exists(logo_png):
-            self.setWindowIcon(QIcon(logo_png))
+        if sys.platform == "win32":
+            icon_path = logo_ico if os.path.exists(logo_ico) else logo_png
+        else:
+            icon_path = logo_png if os.path.exists(logo_png) else logo_ico
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.config = ConfigManager()
 

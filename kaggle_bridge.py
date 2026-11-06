@@ -7,6 +7,7 @@ import time
 import logging
 import certifi
 from typing import Optional, Callable
+from system_utils import get_app_data_dir
 
 # Ensure sys.exit is available if Kaggle SDK attempts to exit on failed auth
 if not hasattr(builtins, "exit"):
@@ -46,8 +47,8 @@ class KaggleBridge:
             os.environ["KAGGLE_KEY"] = clean_key
             
         # Force the config dir to a dummy path so the SDK can NEVER accidentally fall back to a stale ~/.kaggle/kaggle.json
-        appdata_root = os.environ.get("APPDATA", os.path.expanduser("~"))
-        os.environ["KAGGLE_CONFIG_DIR"] = os.path.join(appdata_root, "EarPurifier", "dummy_kaggle")
+        # Dummy config dir in app data directory
+        os.environ["KAGGLE_CONFIG_DIR"] = os.path.join(get_app_data_dir(), "dummy_kaggle")
         
         # Initialize native Kaggle API client
         from kaggle.api.kaggle_api_extended import KaggleApi

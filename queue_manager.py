@@ -9,6 +9,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
+from system_utils import get_app_data_dir
+
 logger = logging.getLogger(__name__)
 
 def _atomic_write_json(file_path: str, data: dict, indent: int = 2):
@@ -42,7 +44,7 @@ class QueueManager:
     def __init__(self):
         self._lock = threading.RLock()
         self._pending_deletions: Dict[str, Dict[str, Any]] = {}
-        self.app_data_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "EarPurifier")
+        self.app_data_dir = get_app_data_dir()
         self.state_file = os.path.join(self.app_data_dir, "job_state.json")
         os.makedirs(self.app_data_dir, exist_ok=True)
         with self._lock:

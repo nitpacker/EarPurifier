@@ -74,46 +74,83 @@ class Theme:
     def resolve_font_family(cls, lang: str = "ar") -> str:
         """
         Detects and returns the single highest-quality font family installed on the OS.
-        Guarantees exact font match, crisp DirectWrite hinting, and zero dotted/pixelated distortion.
-        Anticipates machines without custom fonts: falls back gracefully through standard OS fonts.
+        Guarantees exact font match, crisp DirectWrite/CoreText/FreeType hinting, and zero distortion.
+        Anticipates machines without custom fonts: falls back gracefully through native OS fonts.
         """
+        try:
+            from system_utils import get_current_os
+            current_os = get_current_os()
+        except Exception:
+            current_os = "windows" if sys.platform.startswith("win") else ("macos" if sys.platform == "darwin" else "linux")
+
         try:
             from PySide6.QtGui import QGuiApplication, QFontDatabase
             if not QGuiApplication.instance():
-                return "Dubai" if lang == "ar" else "Plus Jakarta Sans"
+                if current_os == "macos":
+                    return "Geeza Pro" if lang == "ar" else "SF Pro Text"
+                elif current_os == "linux":
+                    return "Noto Naskh Arabic" if lang == "ar" else "Inter"
+                else:
+                    return "Dubai" if lang == "ar" else "Plus Jakarta Sans"
             installed = set(QFontDatabase.families())
         except Exception:
-            return "Segoe UI"
+            return "Segoe UI" if current_os == "windows" else ("Helvetica Neue" if current_os == "macos" else "DejaVu Sans")
 
-        if lang == "ar":
-            for font in ["Cairo", "Dubai", "Segoe UI Variable Text", "Segoe UI", "Tahoma"]:
-                if font in installed:
-                    return font
-            return "Segoe UI"
-        else:
-            for font in ["Plus Jakarta Sans", "Segoe UI Variable Display", "Segoe UI", "Arial"]:
-                if font in installed:
-                    return font
-            return "Segoe UI"
+        if current_os == "macos":
+            candidates = (
+                ["Cairo", "Geeza Pro", "Damascus", "Al Bayan", "DecoType Naskh", "Baghdad", "Arial"]
+                if lang == "ar" else
+                ["Plus Jakarta Sans", "SF Pro Text", "SF Pro Display", "Helvetica Neue", "Arial"]
+            )
+        elif current_os == "linux":
+            candidates = (
+                ["Cairo", "Noto Naskh Arabic", "Noto Sans Arabic", "Amiri", "DejaVu Sans"]
+                if lang == "ar" else
+                ["Plus Jakarta Sans", "Inter", "Ubuntu", "DejaVu Sans", "Liberation Sans", "Noto Sans"]
+            )
+        else:  # Windows
+            candidates = (
+                ["Cairo", "Dubai", "Segoe UI Variable Text", "Segoe UI", "Tahoma"]
+                if lang == "ar" else
+                ["Plus Jakarta Sans", "Segoe UI Variable Display", "Segoe UI", "Arial"]
+            )
+
+        for font in candidates:
+            if font in installed:
+                return font
+        return candidates[-1]
 
     @classmethod
     def resolve_mono_font(cls) -> str:
         """
         Detects and returns the single highest-quality monospaced font installed on the OS.
-        Priority: JetBrains Mono -> Consolas -> Courier New
+        Priority based on OS-native monospace stacks.
         """
+        try:
+            from system_utils import get_current_os
+            current_os = get_current_os()
+        except Exception:
+            current_os = "windows" if sys.platform.startswith("win") else ("macos" if sys.platform == "darwin" else "linux")
+
         try:
             from PySide6.QtGui import QGuiApplication, QFontDatabase
             if not QGuiApplication.instance():
-                return "Consolas"
+                return "SF Mono" if current_os == "macos" else ("DejaVu Sans Mono" if current_os == "linux" else "Consolas")
             installed = set(QFontDatabase.families())
         except Exception:
             return "Consolas"
 
-        for font in ["JetBrains Mono", "Consolas", "Courier New"]:
+        if current_os == "macos":
+            candidates = ["JetBrains Mono", "SF Mono", "Menlo", "Monaco", "Courier New"]
+        elif current_os == "linux":
+            candidates = ["JetBrains Mono", "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "monospace"]
+        else:
+            candidates = ["JetBrains Mono", "Consolas", "Courier New"]
+
+        for font in candidates:
             if font in installed:
                 return font
-        return "Consolas"
+        return candidates[-1]
 
     FONT_FAMILY_AR = "Dubai"
     FONT_FAMILY_EN = "Plus Jakarta Sans"

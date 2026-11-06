@@ -31,7 +31,7 @@ def kill_process_tree(pid: int) -> None:
     Kills a process and all of its spawned child processes.
     Uses 'taskkill /F /T /PID' on Windows for guaranteed recursive process tree destruction.
     """
-    if not pid or pid <= 0:
+    if not pid or pid <= 0 or pid == os.getpid():
         return
 
     if os.name == "nt":
@@ -45,14 +45,46 @@ def kill_process_tree(pid: int) -> None:
         except Exception as e:
             logger.debug(f"Failed to taskkill PID {pid}: {e}")
     else:
+        # POSIX (macOS & Linux)
         try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except Exception:
+            # 1. Recursively find and terminate child processes via pgrep
             try:
-                os.kill(pid, signal.SIGKILL)
+                res = subprocess.run(
+                    ["pgrep", "-P", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=1
+                )
+                if res.returncode == 0:
+                    for child_pid_str in res.stdout.strip().split():
+                        if child_pid_str.isdigit():
+                            child_pid = int(child_pid_str)
+                            if child_pid > 0 and child_pid != os.getpid() and child_pid != pid:
+                                kill_process_tree(child_pid)
             except Exception:
                 pass
+
+            sigkill = getattr(signal, "SIGKILL", getattr(signal, "SIGTERM", 9))
+            # 2. Safely terminate the process or its process group
+            parent_pgrp = getattr(os, "getpgrp", lambda: -1)()
+            try:
+                getpgid_fn = getattr(os, "getpgid", None)
+                pgid = getpgid_fn(pid) if getpgid_fn else -1
+                killpg_fn = getattr(os, "killpg", None)
+                # CRITICAL: Only kill process group if it is strictly valid and detached from the parent's group
+                if killpg_fn and pgid > 0 and pgid != parent_pgrp:
+                    killpg_fn(pgid, sigkill)
+                else:
+                    os.kill(pid, sigkill)
+            except (ProcessLookupError, OSError):
+                try:
+                    os.kill(pid, sigkill)
+                except Exception:
+                    pass
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            logger.debug(f"Error terminating POSIX process {pid}: {e}")
 
 
 def cleanup_all_subprocesses() -> None:

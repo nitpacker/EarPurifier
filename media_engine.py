@@ -41,8 +41,11 @@ def _run_ffmpeg_abortable(cmd: list, abort_check: Optional[Callable[[], bool]] =
         "stderr": subprocess.PIPE,
         "text": True,
     }
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+    try:
+        from system_utils import get_subprocess_spawn_kwargs
+    except ImportError:
+        from .system_utils import get_subprocess_spawn_kwargs
+    kwargs.update(get_subprocess_spawn_kwargs())
 
     try:
         from process_tracker import register_process, unregister_process, kill_process_tree
@@ -109,8 +112,11 @@ def get_duration(media_path: str) -> float:
     
     try:
         kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 180.0}
-        if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+        try:
+            from system_utils import get_subprocess_spawn_kwargs
+        except ImportError:
+            from .system_utils import get_subprocess_spawn_kwargs
+        kwargs.update(get_subprocess_spawn_kwargs())
         result = subprocess.run(cmd, **kwargs)
         duration_val = float(result.stdout.strip())
         return max(0.0, duration_val)
@@ -149,8 +155,11 @@ def probe_container(media_path: str) -> dict:
     ]
 
     kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 180.0}
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+    try:
+        from system_utils import get_subprocess_spawn_kwargs
+    except ImportError:
+        from .system_utils import get_subprocess_spawn_kwargs
+    kwargs.update(get_subprocess_spawn_kwargs())
 
     try:
         result = subprocess.run(cmd, **kwargs)

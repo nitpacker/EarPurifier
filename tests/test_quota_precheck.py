@@ -406,7 +406,7 @@ class TestVerificationUIWidgets(unittest.TestCase):
     def test_phone_verification_warning_dialog(self):
         """Dialog instantiates with localized text, model name, and dismisses on OK button."""
         dlg = PhoneVerificationWarningDialog("RoFormer")
-        self.assertEqual(dlg.windowTitle(), "تنبيه: متطلبات حساب Kaggle" if dlg.layoutDirection() == Qt.RightToLeft else "Notice: Kaggle Account Requirements")
+        self.assertEqual(dlg.windowTitle(), "تنبيه: توثيق حساب Kaggle" if dlg.layoutDirection() == Qt.RightToLeft else "Notice: Kaggle Account Verification")
         self.assertIn("RoFormer", dlg.lbl_msg.text())
         # Clicking OK dismisses
         dlg.btn_ok.click()

@@ -314,13 +314,13 @@ class TestUpdateChecker(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "version": "0.0.5",
+            "version": "2.0.0",
             "download_urls": {
                 "windows": "https://example.com/EarPurifier.exe",
                 "macos": "https://example.com/EarPurifier.dmg",
                 "linux": "https://example.com/EarPurifier.AppImage"
             },
-            "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v0.0.5",
+            "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v2.0.0",
             "message": {
                 "ar": "ملاحظات الإصدار الخامس",
                 "en": "Version 5 notes"
@@ -334,7 +334,7 @@ class TestUpdateChecker(unittest.TestCase):
         worker.run()
 
         self.assertEqual(len(received), 1)
-        self.assertEqual(received[0][0], "0.0.5")
+        self.assertEqual(received[0][0], "2.0.0")
         current_os = get_current_os()
         expected_url = f"https://example.com/EarPurifier.{'exe' if current_os == 'windows' else ('dmg' if current_os == 'macos' else 'AppImage')}"
         self.assertEqual(received[0][3], expected_url)
