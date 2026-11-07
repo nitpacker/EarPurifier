@@ -129,6 +129,37 @@ StartupWMClass=EarPurifier
         shutil.copyfile(os.path.join(assets_dir, "logo.png"), os.path.join(dist_dir, "earpurifier.png"))
         print(f"-> Generated Linux desktop launcher at {desktop_file}")
 
+    elif sys.platform == "darwin":
+        app_path = os.path.join(dist_dir, "EarPurifier.app")
+        dmg_path = os.path.join(dist_dir, "EarPurifier.dmg")
+        staging_dir = os.path.join(dist_dir, "dmg_staging")
+        if os.path.exists(app_path):
+            print("-> Packaging into macOS Disk Image (.dmg)...")
+            try:
+                if os.path.exists(staging_dir):
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                os.makedirs(staging_dir, exist_ok=True)
+                shutil.copytree(app_path, os.path.join(staging_dir, "EarPurifier.app"), symlinks=True)
+                try:
+                    os.symlink("/Applications", os.path.join(staging_dir, "Applications"))
+                except Exception:
+                    pass
+                if os.path.exists(dmg_path):
+                    os.remove(dmg_path)
+                subprocess.run([
+                    "hdiutil", "create",
+                    "-volname", "EarPurifier",
+                    "-srcfolder", staging_dir,
+                    "-ov", "-format", "UDZO",
+                    dmg_path
+                ], check=True, capture_output=True)
+                print(f"-> Generated macOS DMG installer at: {dmg_path}")
+            except Exception as e:
+                print(f"Warning: Could not create DMG automatically: {e}")
+            finally:
+                if os.path.exists(staging_dir):
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+
     # Clean up temporary build artifacts (build folder and .spec file)
     print("Cleaning up intermediate build artifacts...")
     build_dir = os.path.join(root_dir, "build")
