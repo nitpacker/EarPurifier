@@ -157,3 +157,46 @@ def get_subprocess_spawn_kwargs(is_async: bool = False) -> dict:
     else:
         kwargs["start_new_session"] = True
     return kwargs
+
+
+def get_clean_subprocess_env(extra_paths: Optional[list] = None) -> dict:
+    """
+    Builds a clean environment dictionary for spawning child processes:
+    - Strips PyInstaller frozen application leaks (PYTHONHOME, PYTHONPATH, DYLD_*, LD_*)
+      so external Python/Micromamba runtimes don't crash when loading libraries.
+    - Prepend extra_paths, local bin_dir, and standard OS tool paths (Homebrew on macOS).
+    """
+    env = os.environ.copy()
+
+    # Strip PyInstaller runtime leaks that corrupt child Python/Micromamba runtimes
+    for var in (
+        "PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "_MEIPASS2",
+        "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "LD_LIBRARY_PATH"
+    ):
+        env.pop(var, None)
+
+    path_entries = []
+    if extra_paths:
+        path_entries.extend(extra_paths)
+
+    # Local EarPurifier bin directory (contains managed ffmpeg/ffprobe/micromamba)
+    bin_dir = os.path.join(get_app_data_dir(), "bin")
+    if bin_dir not in path_entries:
+        path_entries.append(bin_dir)
+
+    # macOS Homebrew and standard tool paths
+    if sys.platform == "darwin":
+        for hb in ("/opt/homebrew/bin", "/usr/local/bin"):
+            if hb not in path_entries:
+                path_entries.append(hb)
+    elif sys.platform.startswith("linux"):
+        user_bin = os.path.expanduser("~/.local/bin")
+        if user_bin not in path_entries:
+            path_entries.append(user_bin)
+
+    existing_path = env.get("PATH", "")
+    if existing_path:
+        path_entries.append(existing_path)
+
+    env["PATH"] = os.pathsep.join(path_entries)
+    return env

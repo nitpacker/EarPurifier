@@ -277,6 +277,42 @@ class TestCrossPlatformSupport(unittest.TestCase):
             res = _unprotect_secret("enc:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA")
             self.assertEqual(res, "")
 
+    def test_clean_subprocess_env_strips_pyinstaller_vars(self):
+        """Verify get_clean_subprocess_env strips PyInstaller leaks and includes bin_dir."""
+        from system_utils import get_clean_subprocess_env
+        leak_env = {
+            "PATH": "/usr/bin:/bin",
+            "PYTHONHOME": "/frozen/python",
+            "PYTHONPATH": "/frozen/site-packages",
+            "DYLD_LIBRARY_PATH": "/frozen/frameworks",
+            "_MEIPASS2": "/tmp/_MEI12345"
+        }
+        with patch.dict(os.environ, leak_env, clear=True):
+            with patch("sys.platform", "darwin"):
+                cleaned = get_clean_subprocess_env(["/custom/env/bin"])
+                self.assertNotIn("PYTHONHOME", cleaned)
+                self.assertNotIn("PYTHONPATH", cleaned)
+                self.assertNotIn("DYLD_LIBRARY_PATH", cleaned)
+                self.assertNotIn("_MEIPASS2", cleaned)
+                self.assertIn("/custom/env/bin", cleaned["PATH"])
+                self.assertIn("/opt/homebrew/bin", cleaned["PATH"])
+                self.assertIn("EarPurifier/bin", cleaned["PATH"].replace("\\", "/"))
+
+    def test_get_executable_homebrew_fallback_on_macos(self):
+        """Verify get_executable discovers Homebrew binaries when not in default GUI PATH."""
+        target_bin = os.path.normpath("/opt/homebrew/bin/ffmpeg")
+        with patch("sys.platform", "darwin"):
+            with patch("shutil.which", return_value=None):
+                with patch("os.path.isfile") as mock_isfile, \
+                     patch("os.access", return_value=True):
+                    # Simulate /opt/homebrew/bin/ffmpeg exists
+                    def fake_isfile(path):
+                        return os.path.normpath(path) == target_bin
+                    mock_isfile.side_effect = fake_isfile
+                    res = DependencyManager.get_executable("ffmpeg")
+                    self.assertIsNotNone(res)
+                    self.assertEqual(os.path.normpath(res), target_bin)
+
 
 if __name__ == "__main__":
     unittest.main()

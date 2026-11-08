@@ -33,16 +33,31 @@ class DependencyManager:
 
     @staticmethod
     def get_executable(name: str) -> Optional[str]:
-        # 1. Check system PATH
+        ext = ".exe" if sys.platform == "win32" else ""
+
+        # 1. Check local managed bin directory first
+        local_path = os.path.join(DependencyManager.get_bin_dir(), name + ext)
+        if os.path.isfile(local_path):
+            return local_path
+
+        # 2. Check system PATH
         sys_path = shutil.which(name)
         if sys_path:
             return sys_path
 
-        # 2. Check local bin directory
-        ext = ".exe" if sys.platform == "win32" else ""
-        local_path = os.path.join(DependencyManager.get_bin_dir(), name + ext)
-        if os.path.exists(local_path):
-            return local_path
+        # 3. Check standard Unix / Homebrew paths (bypasses macOS GUI PATH truncation)
+        if sys.platform != "win32":
+            standard_dirs = [
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                os.path.expanduser("~/.local/bin"),
+                "/usr/bin",
+                "/bin",
+            ]
+            for sdir in standard_dirs:
+                cand = os.path.join(sdir, name)
+                if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                    return cand
 
         return None
 
@@ -137,27 +152,28 @@ class FFmpegDownloader(QThread):
     finished_download = Signal(bool, str)
 
     def _download_file(self, url: str, dest_path: str, progress_range: tuple = (0, 100)):
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response, open(dest_path, 'wb') as out_file:
-            total_size = int(response.getheader('Content-Length', 0))
+        import requests
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        with requests.get(url, headers=headers, stream=True, timeout=(15, 60)) as resp:
+            resp.raise_for_status()
+            total_size = int(resp.headers.get('Content-Length', 0))
             block_size = 65536
             downloaded = 0
             last_percent = -1
             p_start, p_end = progress_range
 
-            while True:
-                if self.isInterruptionRequested():
-                    raise InterruptedError("Download cancelled")
-                buffer = response.read(block_size)
-                if not buffer:
-                    break
-                out_file.write(buffer)
-                downloaded += len(buffer)
-                if total_size > 0:
-                    pct = p_start + int((downloaded / total_size) * (p_end - p_start))
-                    if pct > last_percent:
-                        self.progress_update.emit(pct)
-                        last_percent = pct
+            with open(dest_path, 'wb') as out_file:
+                for chunk in resp.iter_content(chunk_size=block_size):
+                    if self.isInterruptionRequested():
+                        raise InterruptedError("Download cancelled")
+                    if chunk:
+                        out_file.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            pct = p_start + int((downloaded / total_size) * (p_end - p_start))
+                            if pct > last_percent:
+                                self.progress_update.emit(pct)
+                                last_percent = pct
 
     def run(self):
         try:
@@ -182,35 +198,25 @@ class FFmpegDownloader(QThread):
                     pass
 
             elif current_os == "darwin":
-                # macOS: Evermeet static builds
+                # macOS: Native static Mach-O binaries from descriptinc/ffmpeg-ffprobe-static (b6.1.2-rc.1)
                 self.status_update.emit("Downloading FFmpeg (macOS)...")
-                ffmpeg_url = "https://evermeet.cx/ffmpeg/getrelease/zip"
-                ffmpeg_zip = os.path.join(DependencyManager.get_appdata_dir(), "ffmpeg_mac.zip")
-                self._download_file(ffmpeg_url, ffmpeg_zip, progress_range=(0, 50))
+                is_arm = platform.machine().lower() in ("arm64", "aarch64")
+                arch_tag = "arm64" if is_arm else "x64"
+                base_url = "https://github.com/descriptinc/ffmpeg-ffprobe-static/releases/download/b6.1.2-rc.1"
+                ffmpeg_url = f"{base_url}/ffmpeg-darwin-{arch_tag}"
+                ffprobe_url = f"{base_url}/ffprobe-darwin-{arch_tag}"
 
-                ffprobe_url = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip"
-                ffprobe_zip = os.path.join(DependencyManager.get_appdata_dir(), "ffprobe_mac.zip")
+                ffmpeg_dest = os.path.join(bin_dir, "ffmpeg")
+                ffprobe_dest = os.path.join(bin_dir, "ffprobe")
+
+                self._download_file(ffmpeg_url, ffmpeg_dest, progress_range=(0, 50))
                 self.status_update.emit("Downloading FFprobe (macOS)...")
-                self._download_file(ffprobe_url, ffprobe_zip, progress_range=(50, 90))
+                self._download_file(ffprobe_url, ffprobe_dest, progress_range=(50, 95))
 
-                self.status_update.emit("Extracting FFmpeg binaries...")
-                for z_path in [ffmpeg_zip, ffprobe_zip]:
-                    with zipfile.ZipFile(z_path, 'r') as z:
-                        for info in z.infolist():
-                            base = os.path.basename(info.filename)
-                            if base in ("ffmpeg", "ffprobe"):
-                                info.filename = base
-                                z.extract(info, bin_dir)
-                    try:
-                        os.remove(z_path)
-                    except Exception:
-                        pass
-
-                for binary in ["ffmpeg", "ffprobe"]:
-                    p = os.path.join(bin_dir, binary)
-                    if os.path.exists(p):
+                for binary_path in (ffmpeg_dest, ffprobe_dest):
+                    if os.path.exists(binary_path):
                         try:
-                            os.chmod(p, 0o755)
+                            os.chmod(binary_path, 0o755)
                         except Exception:
                             pass
 
@@ -313,6 +319,8 @@ class EngineDownloader(QThread):
 
             kwargs = {"capture_output": True, "text": True}
             kwargs.update(get_subprocess_spawn_kwargs())
+            from system_utils import get_clean_subprocess_env
+            kwargs["env"] = get_clean_subprocess_env([bin_dir, os.path.join(env_dir, "bin")])
 
             python_exe = DependencyManager.get_engine_python()
             pip_exe = os.path.join(env_dir, "Scripts", "pip.exe") if sys.platform == "win32" else os.path.join(env_dir, "bin", "pip")
@@ -364,7 +372,7 @@ class EngineDownloader(QThread):
             self.status_update.emit("Installing Audio Separator... (Step 3/3)")
             self.progress_update.emit(85)
             if sys.platform == "darwin":
-                sep_pkg = "audio-separator"
+                sep_pkg = "audio-separator[cpu]"
             else:
                 sep_pkg = "audio-separator[gpu]" if installed_gpu else "audio-separator[cpu]"
             res = subprocess.run(pip_base + [sep_pkg], **kwargs)
@@ -458,12 +466,18 @@ print("SUCCESS_DOWNLOAD")
             kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
             kwargs.update(get_subprocess_spawn_kwargs())
 
-            env = os.environ.copy()
+            from system_utils import get_clean_subprocess_env
             env_dir = DependencyManager.get_env_dir()
             if sys.platform == "win32":
-                env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
+                env = get_clean_subprocess_env([
+                    env_dir,
+                    os.path.join(env_dir, "Library", "mingw-w64", "bin"),
+                    os.path.join(env_dir, "Library", "usr", "bin"),
+                    os.path.join(env_dir, "Library", "bin"),
+                    os.path.join(env_dir, "Scripts")
+                ])
             else:
-                env["PATH"] = f"{os.path.join(env_dir, 'bin')}{os.pathsep}{env.get('PATH', '')}"
+                env = get_clean_subprocess_env([os.path.join(env_dir, "bin")])
 
             self.process = subprocess.Popen([env_python, script_path], env=env, **kwargs)
             process = self.process

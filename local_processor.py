@@ -184,17 +184,22 @@ class LocalJobProcessor(QThread):
             # Direct stderr into stdout to form a single stream and avoid pipe buffer deadlocks
             kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
             try:
-                from system_utils import get_subprocess_spawn_kwargs
+                from system_utils import get_subprocess_spawn_kwargs, get_clean_subprocess_env
             except ImportError:
-                from .system_utils import get_subprocess_spawn_kwargs
+                from .system_utils import get_subprocess_spawn_kwargs, get_clean_subprocess_env
             kwargs.update(get_subprocess_spawn_kwargs())
                 
-            env = os.environ.copy()
             env_dir = DependencyManager.get_env_dir()
             if sys.platform == "win32":
-                env["PATH"] = f"{env_dir};{env_dir}\\Library\\mingw-w64\\bin;{env_dir}\\Library\\usr\\bin;{env_dir}\\Library\\bin;{env_dir}\\Scripts;{env.get('PATH', '')}"
+                env = get_clean_subprocess_env([
+                    env_dir,
+                    os.path.join(env_dir, "Library", "mingw-w64", "bin"),
+                    os.path.join(env_dir, "Library", "usr", "bin"),
+                    os.path.join(env_dir, "Library", "bin"),
+                    os.path.join(env_dir, "Scripts")
+                ])
             else:
-                env["PATH"] = f"{os.path.join(env_dir, 'bin')}{os.pathsep}{env.get('PATH', '')}"
+                env = get_clean_subprocess_env([os.path.join(env_dir, "bin")])
                 
             self.current_process = subprocess.Popen(cmd, env=env, **kwargs)
             try:
