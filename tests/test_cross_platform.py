@@ -9,7 +9,7 @@ import sys
 import signal
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, mock_open
 
 # Redirect APPDATA to workspace directory for sandboxed tests
 test_appdata = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".test_appdata")
@@ -173,8 +173,12 @@ class TestCrossPlatformSupport(unittest.TestCase):
             self.assertTrue(sep.replace("\\", "/").endswith("env/Scripts/audio-separator.exe"))
 
         with patch("sys.platform", "darwin"):
+            env_dir = DependencyManager.get_env_dir()
+            bin_dir = DependencyManager.get_bin_dir()
             py = DependencyManager.get_engine_python()
             sep = DependencyManager.get_engine_separator_exe()
+            self.assertEqual(env_dir, os.path.expanduser("~/.earpurifier/env"))
+            self.assertEqual(bin_dir, os.path.expanduser("~/.earpurifier/bin"))
             self.assertTrue(py.replace("\\", "/").endswith("env/bin/python"))
             self.assertTrue(sep.replace("\\", "/").endswith("env/bin/audio-separator"))
 
@@ -297,6 +301,214 @@ class TestCrossPlatformSupport(unittest.TestCase):
                 self.assertIn("/custom/env/bin", cleaned["PATH"])
                 self.assertIn("/opt/homebrew/bin", cleaned["PATH"])
                 self.assertIn("EarPurifier/bin", cleaned["PATH"].replace("\\", "/"))
+                self.assertIn(".earpurifier/bin", cleaned["PATH"].replace("\\", "/"))
+
+    def test_get_executable_legacy_bin_discovery_on_macos(self):
+        """Verify get_executable discovers FFmpeg in legacy Application Support/EarPurifier/bin."""
+        legacy_bin = os.path.normpath(os.path.join(test_appdata, "EarPurifier", "bin", "ffmpeg"))
+        with patch("sys.platform", "darwin"):
+            with patch.object(DependencyManager, "get_bin_dir", return_value=os.path.expanduser("~/.earpurifier/bin")), \
+                 patch.object(DependencyManager, "get_appdata_dir", return_value=os.path.join(test_appdata, "EarPurifier")):
+                def fake_isfile(path):
+                    return os.path.normpath(path) == legacy_bin
+                with patch("os.path.isfile", side_effect=fake_isfile):
+                    found = DependencyManager.get_executable("ffmpeg")
+                    self.assertIsNotNone(found)
+                    self.assertEqual(os.path.normpath(found), legacy_bin)
+
+    def test_dependency_manager_windows_short_path_resolution(self):
+        """Verify Windows resolves 8.3 short paths when env path contains spaces."""
+        fake_appdata = "C:\\Users\\John Doe\\AppData\\Roaming\\EarPurifier"
+        fake_short = "C:\\Users\\JOHNDE~1\\AppData\\Roaming\\EarPurifier\\env"
+        with patch("sys.platform", "win32"):
+            with patch.object(DependencyManager, "get_appdata_dir", return_value=fake_appdata):
+                with patch("ctypes.windll.kernel32.GetShortPathNameW", create=True) as mock_short:
+                    def side_effect(path, buf, size):
+                        buf.value = fake_short
+                        return len(fake_short)
+                    mock_short.side_effect = side_effect
+                    with patch("os.path.exists", return_value=True):
+                        resolved = DependencyManager.get_env_dir()
+                        self.assertEqual(resolved, fake_short)
+
+    def test_local_processor_cmd_prefix_shebang_immunity(self):
+        """Verify LocalJobProcessor executes Python directly on POSIX to bypass kernel shebang traps."""
+        from local_processor import LocalJobProcessor
+
+        # Windows uses binary .exe wrapper directly
+        with patch("sys.platform", "win32"):
+            engine_exe = "C:\\env\\Scripts\\audio-separator.exe"
+            engine_python = "C:\\env\\python.exe"
+            cmd_prefix = LocalJobProcessor.get_cmd_prefix(engine_exe, engine_python)
+            self.assertEqual(cmd_prefix, [engine_exe])
+
+        # macOS / POSIX with python present directly invokes python interpreter
+        with patch("sys.platform", "darwin"):
+            engine_exe = "/Users/test/.earpurifier/env/bin/audio-separator"
+            engine_python = "/Users/test/.earpurifier/env/bin/python"
+            with patch("os.path.exists", return_value=True):
+                cmd_prefix = LocalJobProcessor.get_cmd_prefix(engine_exe, engine_python)
+                self.assertEqual(cmd_prefix, [engine_python, engine_exe])
+
+        # macOS / POSIX fallback when python path does not exist
+        with patch("sys.platform", "darwin"):
+            engine_exe = "/Users/test/.earpurifier/env/bin/audio-separator"
+            engine_python = "/Users/test/.earpurifier/env/bin/python"
+            with patch("os.path.exists", return_value=False):
+                cmd_prefix = LocalJobProcessor.get_cmd_prefix(engine_exe, engine_python)
+                self.assertEqual(cmd_prefix, [engine_exe])
+
+    def test_local_processor_popen_uses_cmd_prefix(self):
+        """Verify process_local_job actually passes cmd_prefix to subprocess.Popen."""
+        from local_processor import LocalJobProcessor
+        mock_qm = MagicMock()
+        mock_qm.is_job_aborted.return_value = False
+        mock_qm.get_all_jobs.return_value = {}
+        mock_config = MagicMock()
+        mock_config.appdata_dir = test_appdata
+        mock_config.get_output_folder.return_value = os.path.join(test_appdata, "out")
+
+        processor = LocalJobProcessor(mock_qm, mock_config)
+        temp_dir = os.path.join(test_appdata, "temp", "test_jid")
+        os.makedirs(temp_dir, exist_ok=True)
+        vocal_file = os.path.join(temp_dir, "audio_(Vocals).wav")
+        with open(vocal_file, "w") as f:
+            f.write("dummy")
+
+        job = {
+            "original_media": os.path.join(test_appdata, "audio.mp4"),
+            "selected_audio_stream": 0,
+            "duration": 5.0,
+            "model": "MDX23C"
+        }
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 1234
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+        mock_proc.stdout.readline.return_value = ""
+
+        real_exists = os.path.exists
+        with patch("sys.platform", "darwin"), \
+             patch("local_processor.DependencyManager.has_local_engine", return_value=True), \
+             patch("local_processor.DependencyManager.get_engine_separator_exe", return_value="/env/bin/audio-separator"), \
+             patch("local_processor.DependencyManager.get_engine_python", return_value="/env/bin/python"), \
+             patch("local_processor.DependencyManager.get_env_dir", return_value="/env"), \
+             patch("local_processor.probe_container", return_value={"audio_streams": [{}]}), \
+             patch("local_processor.extract_audio", return_value=""), \
+             patch("local_processor.pad_or_trim_audio", return_value=""), \
+             patch("local_processor.remux_media", return_value=""), \
+             patch("os.path.exists", side_effect=lambda p: True if p in (vocal_file, "/env/bin/python") else real_exists(p)), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("process_tracker.register_process"), \
+             patch("process_tracker.unregister_process"):
+
+            processor.process_local_job("test_jid", job)
+            spawned_cmd = mock_popen.call_args[0][0]
+            self.assertEqual(spawned_cmd[0], "/env/bin/python")
+            self.assertEqual(spawned_cmd[1], "/env/bin/audio-separator")
+
+    def test_engine_downloader_detects_wrong_python_version_and_rebuilds(self):
+        """Verify EngineDownloader wipes and recreates environment if python version does not match."""
+        from dependency_manager import EngineDownloader
+        downloader = EngineDownloader()
+
+        with patch("sys.platform", "darwin"), \
+             patch.object(DependencyManager, "get_bin_dir", return_value="/test/bin"), \
+             patch.object(DependencyManager, "get_env_dir", return_value="/test/env"), \
+             patch.object(DependencyManager, "get_engine_python", return_value="/test/env/bin/python"), \
+             patch.object(DependencyManager, "get_appdata_dir", return_value=test_appdata), \
+             patch("os.path.exists", return_value=True), \
+             patch("shutil.rmtree") as mock_rmtree, \
+             patch("subprocess.run") as mock_run:
+
+            # Simulate existing python reporting 3.11 instead of expected 3.10 on macOS
+            ver_res = MagicMock()
+            ver_res.returncode = 0
+            ver_res.stdout = "3.11\n"
+
+            create_res = MagicMock()
+            create_res.returncode = 0
+
+            pip_res = MagicMock()
+            pip_res.returncode = 0
+
+            def fake_run(cmd, **kwargs):
+                if "-c" in cmd:
+                    return ver_res
+                elif "create" in cmd:
+                    return create_res
+                return pip_res
+
+            mock_run.side_effect = fake_run
+            with patch("builtins.open", mock_open()):
+                downloader.run()
+
+            # Confirm legacy env cleanup + rebuild rmtree were called
+            self.assertTrue(mock_rmtree.called)
+            # Confirm micromamba create was called with python=3.10
+            create_calls = [call for call in mock_run.call_args_list if "create" in call[0][0]]
+            self.assertTrue(len(create_calls) > 0)
+            self.assertIn("python=3.10", create_calls[0][0][0])
+
+    def test_model_downloader_escapes_paths_and_cleans_temp_script(self):
+        """Verify ModelDownloader uses safe repr formatting and cleans up temp_download.py in finally."""
+        from dependency_manager import ModelDownloader
+        # Path with spaces and trailing backslash (notoriously breaks raw strings)
+        tricky_dir = "C:\\EarPurifier AppData\\models\\RoFormer\\"
+        downloader = ModelDownloader("test_model.ckpt", tricky_dir)
+
+        written_content = {}
+        def fake_open(path, mode="r", encoding=None):
+            class FakeFile:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def write(self, content): written_content["code"] = content
+            return FakeFile()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.stdout.readline.side_effect = ["SUCCESS_DOWNLOAD\n", ""]
+
+        removed_files = []
+        with patch.object(DependencyManager, "get_engine_python", return_value="python"), \
+             patch.object(DependencyManager, "get_env_dir", return_value="/env"), \
+             patch("builtins.open", side_effect=fake_open), \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.remove", side_effect=lambda p: removed_files.append(p)), \
+             patch("process_tracker.register_process"), \
+             patch("process_tracker.unregister_process"):
+
+            downloader.run()
+
+            # Verify the written code is syntactically compilable python
+            self.assertIn("code", written_content)
+            compile(written_content["code"], "<test_script>", "exec")
+            # Verify script_path was removed in finally
+            self.assertTrue(any(p.endswith("temp_download.py") for p in removed_files))
+
+    def test_get_executable_posix_chmod_safety(self):
+        """Verify get_executable attempts chmod 0o755 when binary exists without executable bit."""
+        fake_bin = os.path.join("/test/bin", "ffmpeg")
+        with patch("sys.platform", "darwin"):
+            with patch.object(DependencyManager, "get_bin_dir", return_value="/test/bin"), \
+                 patch("os.path.isfile", return_value=True), \
+                 patch("os.access", return_value=False), \
+                 patch("os.chmod") as mock_chmod:
+                exe = DependencyManager.get_executable("ffmpeg")
+                self.assertIsNotNone(exe)
+                mock_chmod.assert_called_with(fake_bin, 0o755)
+
+    def test_media_engine_fast_aac_encoder(self):
+        """Verify get_fast_aac_encoder returns hardware encoders: aac_mf on win, aac_at on mac."""
+        from media_engine import get_fast_aac_encoder
+        with patch("sys.platform", "win32"):
+            self.assertEqual(get_fast_aac_encoder(), "aac_mf")
+        with patch("sys.platform", "darwin"):
+            self.assertEqual(get_fast_aac_encoder(), "aac_at")
+        with patch("sys.platform", "linux"):
+            self.assertEqual(get_fast_aac_encoder(), "aac")
 
     def test_get_executable_homebrew_fallback_on_macos(self):
         """Verify get_executable discovers Homebrew binaries when not in default GUI PATH."""

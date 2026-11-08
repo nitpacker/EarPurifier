@@ -290,7 +290,7 @@ def pad_or_trim_audio(audio_path: str, target_duration: float, output_path: str,
         pass
         
     if output_path.lower().endswith(".wav"):
-        cmd.extend(["-rf64", "auto"])
+        cmd.extend(["-c:a", "pcm_s16le", "-rf64", "auto"])
 
     cmd.append(output_path)
     

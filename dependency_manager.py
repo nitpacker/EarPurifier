@@ -23,13 +23,39 @@ class DependencyManager:
 
     @staticmethod
     def get_bin_dir() -> str:
-        d = os.path.join(DependencyManager.get_appdata_dir(), "bin")
+        if sys.platform == "darwin":
+            d = os.path.expanduser("~/.earpurifier/bin")
+        else:
+            d = os.path.join(DependencyManager.get_appdata_dir(), "bin")
         os.makedirs(d, exist_ok=True)
         return d
 
     @staticmethod
     def get_env_dir() -> str:
-        return os.path.join(DependencyManager.get_appdata_dir(), "env")
+        if sys.platform == "darwin":
+            d = os.path.expanduser("~/.earpurifier/env")
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            return d
+        elif sys.platform == "win32":
+            path = os.path.join(DependencyManager.get_appdata_dir(), "env")
+            if " " in path:
+                try:
+                    import ctypes
+                    buf = ctypes.create_unicode_buffer(500)
+                    if os.path.exists(path):
+                        ret = ctypes.windll.kernel32.GetShortPathNameW(path, buf, 500)
+                        if ret > 0:
+                            return buf.value
+                    parent = os.path.dirname(path)
+                    if os.path.exists(parent):
+                        ret = ctypes.windll.kernel32.GetShortPathNameW(parent, buf, 500)
+                        if ret > 0:
+                            return os.path.join(buf.value, os.path.basename(path))
+                except Exception:
+                    pass
+            return path
+        else:
+            return os.path.join(DependencyManager.get_appdata_dir(), "env")
 
     @staticmethod
     def get_executable(name: str) -> Optional[str]:
@@ -38,14 +64,31 @@ class DependencyManager:
         # 1. Check local managed bin directory first
         local_path = os.path.join(DependencyManager.get_bin_dir(), name + ext)
         if os.path.isfile(local_path):
+            if sys.platform != "win32":
+                try:
+                    if not os.access(local_path, os.X_OK):
+                        os.chmod(local_path, 0o755)
+                except Exception:
+                    pass
             return local_path
 
-        # 2. Check system PATH
+        # 2. Check legacy bin directory (e.g. existing installation at ~/Library/Application Support/EarPurifier/bin)
+        legacy_path = os.path.join(DependencyManager.get_appdata_dir(), "bin", name + ext)
+        if os.path.isfile(legacy_path):
+            if sys.platform != "win32":
+                try:
+                    if not os.access(legacy_path, os.X_OK):
+                        os.chmod(legacy_path, 0o755)
+                except Exception:
+                    pass
+            return legacy_path
+
+        # 3. Check system PATH
         sys_path = shutil.which(name)
         if sys_path:
             return sys_path
 
-        # 3. Check standard Unix / Homebrew paths (bypasses macOS GUI PATH truncation)
+        # 4. Check standard Unix / Homebrew paths (bypasses macOS GUI PATH truncation)
         if sys.platform != "win32":
             standard_dirs = [
                 "/opt/homebrew/bin",
@@ -277,7 +320,26 @@ class EngineDownloader(QThread):
             mamba_name = "micromamba.exe" if sys.platform == "win32" else "micromamba"
             mamba_exe = os.path.join(bin_dir, mamba_name)
 
-            # 1. Download Micromamba if missing
+            # Cleanup of Corrupted Legacy macOS Environment (~/Library/Application Support/EarPurifier/env)
+            if sys.platform == "darwin":
+                legacy_env = os.path.join(DependencyManager.get_appdata_dir(), "env")
+                if os.path.exists(legacy_env):
+                    try:
+                        self.status_update.emit("Cleaning up legacy environment...")
+                        shutil.rmtree(legacy_env, ignore_errors=True)
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up legacy env directory {legacy_env}: {e}")
+
+            # 1. Download Micromamba if missing (checking legacy bin first)
+            legacy_mamba = os.path.join(DependencyManager.get_appdata_dir(), "bin", mamba_name)
+            if not os.path.exists(mamba_exe) and os.path.exists(legacy_mamba):
+                try:
+                    shutil.copy2(legacy_mamba, mamba_exe)
+                    if sys.platform != "win32":
+                        os.chmod(mamba_exe, 0o755)
+                except Exception:
+                    mamba_exe = legacy_mamba
+
             if not os.path.exists(mamba_exe):
                 self.status_update.emit("Downloading Micromamba package manager...")
                 machine = platform.machine().lower()
@@ -313,6 +375,13 @@ class EngineDownloader(QThread):
                     except Exception:
                         pass
 
+            # Ensure micromamba is executable on POSIX before invocation
+            if sys.platform != "win32" and os.path.exists(mamba_exe):
+                try:
+                    os.chmod(mamba_exe, 0o755)
+                except Exception:
+                    pass
+
             # 2. Create Environment
             self.status_update.emit("Building isolated Python environment... (Step 1/3)")
             self.progress_update.emit(20)
@@ -324,15 +393,34 @@ class EngineDownloader(QThread):
 
             python_exe = DependencyManager.get_engine_python()
             pip_exe = os.path.join(env_dir, "Scripts", "pip.exe") if sys.platform == "win32" else os.path.join(env_dir, "bin", "pip")
-            if not os.path.exists(env_dir) or not os.path.exists(python_exe):
+
+            expected_py_ver = "3.10" if sys.platform != "win32" else "3.11"
+            rebuild_env = not os.path.exists(env_dir) or not os.path.exists(python_exe)
+            if not rebuild_env:
+                try:
+                    ver_check = subprocess.run(
+                        [python_exe, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        **get_subprocess_spawn_kwargs()
+                    )
+                    if ver_check.returncode != 0 or ver_check.stdout.strip() != expected_py_ver:
+                        rebuild_env = True
+                except Exception:
+                    rebuild_env = True
+
+            if rebuild_env:
                 if os.path.exists(env_dir):
                     try:
                         shutil.rmtree(env_dir, ignore_errors=True)
                     except Exception:
                         pass
-                res = subprocess.run([mamba_exe, "create", "-y", "-p", env_dir, "python=3.11", "pip", "-c", "conda-forge"], **kwargs)
+                py_spec = f"python={expected_py_ver}"
+                res = subprocess.run([mamba_exe, "create", "-y", "-p", env_dir, py_spec, "pip", "-c", "conda-forge"], **kwargs)
                 if res.returncode != 0:
-                    raise RuntimeError(f"Environment creation failed: {res.stderr}")
+                    err_msg = res.stderr.strip() or res.stdout.strip() or "Unknown micromamba error"
+                    raise RuntimeError(f"Environment creation failed: {err_msg}")
 
             if sys.platform != "win32" and os.path.exists(python_exe):
                 try:
@@ -340,7 +428,7 @@ class EngineDownloader(QThread):
                 except Exception:
                     pass
 
-            pip_base = [python_exe, "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check"]
+            pip_base = [python_exe, "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check", "--prefer-binary", "--default-timeout=120"]
 
             # 3. Install PyTorch (Adaptive Hardware Acceleration)
             installed_gpu = False
@@ -349,7 +437,8 @@ class EngineDownloader(QThread):
                 self.progress_update.emit(50)
                 res = subprocess.run(pip_base + ["torch"], **kwargs)
                 if res.returncode != 0:
-                    raise RuntimeError(f"PyTorch install failed: {res.stderr}")
+                    err_msg = res.stderr.strip() or res.stdout.strip() or "Unknown pip error"
+                    raise RuntimeError(f"PyTorch install failed: {err_msg}")
             else:
                 has_gpu = DependencyManager.has_nvidia_gpu()
                 if has_gpu:
@@ -366,7 +455,8 @@ class EngineDownloader(QThread):
                     self.progress_update.emit(50)
                     res = subprocess.run(pip_base + ["torch", "--index-url", "https://download.pytorch.org/whl/cpu"], **kwargs)
                     if res.returncode != 0:
-                        raise RuntimeError(f"PyTorch install failed: {res.stderr}")
+                        err_msg = res.stderr.strip() or res.stdout.strip() or "Unknown pip error"
+                        raise RuntimeError(f"PyTorch install failed: {err_msg}")
 
             # 4. Install Audio Separator
             self.status_update.emit("Installing Audio Separator... (Step 3/3)")
@@ -377,7 +467,8 @@ class EngineDownloader(QThread):
                 sep_pkg = "audio-separator[gpu]" if installed_gpu else "audio-separator[cpu]"
             res = subprocess.run(pip_base + [sep_pkg], **kwargs)
             if res.returncode != 0:
-                raise RuntimeError(f"Audio Separator install failed: {res.stderr}")
+                err_msg = res.stderr.strip() or res.stdout.strip() or "Unknown pip error"
+                raise RuntimeError(f"Audio Separator install failed: {err_msg}")
 
             # On POSIX, ensure all binaries in env/bin are executable
             if sys.platform != "win32":
@@ -445,20 +536,21 @@ class ModelDownloader(QThread):
                 pass
 
     def run(self):
+        script_path = None
         try:
             self.status_update.emit("Downloading Model...")
             self.progress_update.emit(0)
 
             env_python = DependencyManager.get_engine_python()
 
-            script_path = os.path.join(DependencyManager.get_appdata_dir(), "temp_download.py")
+            script_path = os.path.join(DependencyManager.get_env_dir(), "temp_download.py")
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(f'''
 import logging, sys
 from audio_separator.separator import Separator
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-separator = Separator(model_file_dir=r"{self.models_dir}", log_level=logging.INFO)
-separator.load_model(r"{self.model_name}")
+separator = Separator(model_file_dir={repr(self.models_dir)}, log_level=logging.INFO)
+separator.load_model({repr(self.model_name)})
 print("SUCCESS_DOWNLOAD")
 ''')
 
@@ -516,11 +608,6 @@ print("SUCCESS_DOWNLOAD")
             except Exception:
                 pass
 
-            try:
-                os.remove(script_path)
-            except Exception:
-                pass
-
             full_output = "".join(captured_output)
             if "SUCCESS_DOWNLOAD" in full_output:
                 self.progress_update.emit(100)
@@ -544,3 +631,9 @@ print("SUCCESS_DOWNLOAD")
 
         except Exception as e:
             self.finished_download.emit(False, str(e))
+        finally:
+            if script_path and os.path.exists(script_path):
+                try:
+                    os.remove(script_path)
+                except Exception:
+                    pass

@@ -95,6 +95,14 @@ class LocalJobProcessor(QThread):
             self.queue_manager.update_job(job_id, {"message": "Job aborted and cleaned up."})
         self._log(job_id, "Job aborted and cleaned up.")
 
+    @staticmethod
+    def get_cmd_prefix(engine_exe: str, engine_python: Optional[str] = None) -> list:
+        if sys.platform == "win32":
+            return [engine_exe]
+        if engine_python and os.path.exists(engine_python):
+            return [engine_python, engine_exe]
+        return [engine_exe]
+
     def process_local_job(self, job_id, job):
         if not DependencyManager.has_local_engine():
             raise RuntimeError("Local Engine is not installed.")
@@ -169,8 +177,11 @@ class LocalJobProcessor(QThread):
             os.makedirs(models_dir, exist_ok=True)
             
             engine_exe = DependencyManager.get_engine_separator_exe()
-            cmd = [
-                engine_exe, flac_path,
+            engine_python = DependencyManager.get_engine_python()
+            cmd_prefix = self.get_cmd_prefix(engine_exe, engine_python)
+
+            cmd = cmd_prefix + [
+                flac_path,
                 "-m", model_name,
                 "--model_file_dir", models_dir,
                 "--output_dir", temp_dir,

@@ -179,10 +179,16 @@ def get_clean_subprocess_env(extra_paths: Optional[list] = None) -> dict:
     if extra_paths:
         path_entries.extend(extra_paths)
 
-    # Local EarPurifier bin directory (contains managed ffmpeg/ffprobe/micromamba)
-    bin_dir = os.path.join(get_app_data_dir(), "bin")
-    if bin_dir not in path_entries:
-        path_entries.append(bin_dir)
+    # Space-free bin directory on macOS (~/.earpurifier/bin)
+    if sys.platform == "darwin":
+        space_free_bin = os.path.expanduser("~/.earpurifier/bin")
+        if space_free_bin not in path_entries:
+            path_entries.append(space_free_bin)
+
+    # Local EarPurifier bin directory (contains managed ffmpeg/ffprobe/micromamba or legacy binaries)
+    legacy_bin_dir = os.path.join(get_app_data_dir(), "bin")
+    if legacy_bin_dir not in path_entries:
+        path_entries.append(legacy_bin_dir)
 
     # macOS Homebrew and standard tool paths
     if sys.platform == "darwin":
