@@ -1,15 +1,15 @@
 {
-  "version": "1.0.0",
-  "release_date": "2026-11-05",
+  "version": "1.0.1",
+  "release_date": "2026-11-26",
   "download_urls": {
-    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0.exe",
-    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0_mac.dmg",
-    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0.AppImage"
+    "windows": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.1/EarPurifier1.0.1.exe",
+    "macos": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.1/EarPurifier1.0.1_mac.dmg",
+    "linux": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.1/EarPurifier1.0.1.AppImage"
   },
-  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.0/EarPurifier1.0.0.exe",
-  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v1.0.0",
+  "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.1/EarPurifier1.0.1.exe",
+  "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v1.0.1",
   "message": {
-    "ar": "الإصدار الأولي من هدوء",
-    "en": "First stable release"
+    "ar": "إصلاح مشكلة تنزيل النماذج المحلية، وتفعيل تسريع بطاقات NVIDIA (CUDA 12) تلقائياً مع خيار ترقية بنقرة واحدة، وتحسين دعم macOS واستقرار التطبيق",
+    "en": "Fixed local model downloads, automatic NVIDIA GPU (CUDA 12) acceleration with 1-click upgrade, improved macOS support, and stability fixes"
   }
 }

@@ -20,7 +20,7 @@ from .components import (
 )
 from .dialogs import SettingsDialog, AudioTrackSelectDialog, PhoneVerificationWarningDialog
 from .job_queue_section import JobQueueSection
-from .overlay_widgets import DownloadOverlayWidget, VerificationReminderBanner
+from .overlay_widgets import DownloadOverlayWidget, VerificationReminderBanner, GpuUpgradeBanner
 from .update_banner import UpdateBannerWidget
 
 try:
@@ -30,7 +30,10 @@ try:
     from processor_thread import JobProcessor
     from local_processor import LocalJobProcessor
     from media_engine import probe_container
-    from dependency_manager import DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader
+    from dependency_manager import (
+        DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader,
+        classify_local_error, is_ffmpeg_missing_error,
+    )
     from logger_setup import setup_logger
     from i18n import t, is_rtl, set_language, apply_app_direction
 except ImportError:
@@ -40,7 +43,10 @@ except ImportError:
     from src.processor_thread import JobProcessor
     from src.local_processor import LocalJobProcessor
     from src.media_engine import probe_container
-    from src.dependency_manager import DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader
+    from src.dependency_manager import (
+        DependencyManager, FFmpegDownloader, EngineDownloader, ModelDownloader,
+        classify_local_error, is_ffmpeg_missing_error,
+    )
     from src.logger_setup import setup_logger
     from src.i18n import t, is_rtl, set_language, apply_app_direction
 
@@ -103,6 +109,13 @@ class MainWindow(QMainWindow):
 
         self.queue_manager = QueueManager()
         self.update_checker = None
+        self.ffmpeg_overlay = None
+        self.engine_overlay = None
+        self.gpu_upgrade_banner = None
+        self.ffmpeg_thread = None
+        self.engine_thread = None
+        self.model_thread = None
+        self._retired_model_threads = []
 
         self.init_ui()
         self.init_threads()
@@ -239,8 +252,10 @@ class MainWindow(QMainWindow):
             self.local_section.apply_theme(mode)
         if hasattr(self, 'update_banner'):
             self.update_banner.apply_theme(mode)
-        if hasattr(self, 'verification_banner'):
+        if hasattr(self, 'verification_banner') and self.verification_banner is not None:
             self.verification_banner.apply_theme(mode)
+        if getattr(self, 'gpu_upgrade_banner', None) is not None:
+            self.gpu_upgrade_banner.apply_theme(mode)
         set_native_window_theme(self, mode == ThemeMode.DARK)
 
     def showEvent(self, event):
@@ -285,52 +300,113 @@ class MainWindow(QMainWindow):
             self.local_section.retranslate_ui()
         if hasattr(self, 'update_banner'):
             self.update_banner.retranslate_ui(new_lang)
-        if hasattr(self, 'verification_banner'):
+        if hasattr(self, 'verification_banner') and self.verification_banner is not None:
             self.verification_banner.retranslate_ui(new_lang)
-        if hasattr(self, 'engine_overlay') and self.engine_overlay.isVisible():
-            engine_size = "~2.7 GB" if DependencyManager.has_nvidia_gpu() else "~350 MB"
-            self.engine_overlay.lbl_title.setText(t("engine_title"))
-            self.engine_overlay.lbl_desc.setText(t("engine_desc", size=engine_size))
-            self.engine_overlay.btn_download.setText(t("engine_btn_download"))
-            if getattr(self.engine_overlay, "_raw_status", None):
-                self.engine_overlay.set_status_message(self.engine_overlay._raw_status)
+        if getattr(self, 'gpu_upgrade_banner', None) is not None:
+            self.gpu_upgrade_banner.retranslate_ui(new_lang)
+        if getattr(self, 'ffmpeg_overlay', None) is not None:
+            try:
+                if self.ffmpeg_overlay.isVisible():
+                    self.ffmpeg_overlay.lbl_title.setText(t("ffmpeg_title"))
+                    self.ffmpeg_overlay.lbl_desc.setText(t("ffmpeg_desc"))
+                    self.ffmpeg_overlay.btn_download.setText(t("ffmpeg_btn_download"))
+                    if getattr(self.ffmpeg_overlay, "_raw_status", None):
+                        self.ffmpeg_overlay.set_status_message(self.ffmpeg_overlay._raw_status)
+            except RuntimeError:
+                self.ffmpeg_overlay = None
+        if getattr(self, 'engine_overlay', None) is not None:
+            try:
+                if self.engine_overlay.isVisible():
+                    engine_size = "~2.7 GB" if DependencyManager.has_nvidia_gpu() else "~350 MB"
+                    self.engine_overlay.lbl_title.setText(t("engine_title"))
+                    self.engine_overlay.lbl_desc.setText(t("engine_desc", size=engine_size))
+                    self.engine_overlay.btn_download.setText(t("engine_btn_download"))
+                    if getattr(self.engine_overlay, "_raw_status", None):
+                        self.engine_overlay.set_status_message(self.engine_overlay._raw_status)
+            except RuntimeError:
+                self.engine_overlay = None
 
     def check_ffmpeg(self):
         if not DependencyManager.has_ffmpeg():
+            existing = getattr(self, 'ffmpeg_overlay', None)
+            if existing is not None:
+                try:
+                    if existing.isVisible():
+                        existing.raise_()
+                        return
+                except RuntimeError:
+                    self.ffmpeg_overlay = None
+
+            cw = self.centralWidget()
             self.ffmpeg_overlay = DownloadOverlayWidget(
-                t("ffmpeg_title"), t("ffmpeg_desc"), t("ffmpeg_btn_download"), self.centralWidget()
+                t("ffmpeg_title"), t("ffmpeg_desc"), t("ffmpeg_btn_download"), cw
             )
-            self.ffmpeg_overlay.resize(self.width(), self.height())
+            if cw is not None:
+                self.ffmpeg_overlay.resize(cw.size())
+            else:
+                self.ffmpeg_overlay.resize(self.width(), self.height())
             self.ffmpeg_overlay.btn_download.clicked.connect(self.start_ffmpeg_download)
             self.ffmpeg_overlay.show()
+            self.ffmpeg_overlay.raise_()
             self.stack.setEnabled(False)
+            if hasattr(self, 'rail'):
+                self.rail.setEnabled(False)
 
     def start_ffmpeg_download(self):
+        if getattr(self, 'ffmpeg_overlay', None) is None:
+            return
+        if getattr(self, 'ffmpeg_thread', None) is not None and self.ffmpeg_thread.isRunning():
+            return
         self.ffmpeg_overlay.set_downloading()
         self.ffmpeg_thread = FFmpegDownloader()
-        self.ffmpeg_thread.progress_update.connect(self.ffmpeg_overlay.progress.setValue)
-        self.ffmpeg_thread.status_update.connect(self.ffmpeg_overlay.lbl_status.setText)
+        self.ffmpeg_thread.progress_update.connect(self.ffmpeg_overlay.set_progress)
+        self.ffmpeg_thread.status_update.connect(self.ffmpeg_overlay.set_status_message)
         self.ffmpeg_thread.finished_download.connect(self.on_ffmpeg_downloaded)
         self.ffmpeg_thread.start()
 
     def on_ffmpeg_downloaded(self, success: bool, message: str):
+        overlay = getattr(self, 'ffmpeg_overlay', None)
         if success:
-            self.ffmpeg_overlay.setVisible(False)
+            self.ffmpeg_overlay = None
+            if overlay is not None:
+                try:
+                    overlay.setVisible(False)
+                    overlay.deleteLater()
+                except RuntimeError:
+                    pass
             self.stack.setEnabled(True)
-            self.ffmpeg_overlay.deleteLater()
+            if hasattr(self, 'rail'):
+                self.rail.setEnabled(True)
         else:
-            self.ffmpeg_overlay.set_error(t("ffmpeg_status_failed", message=message))
+            if overlay is not None:
+                try:
+                    overlay.set_error(t("ffmpeg_status_failed", message=message))
+                except RuntimeError:
+                    self.ffmpeg_overlay = None
 
     def setup_local_tab(self):
         grid = QGridLayout(self.tab_local)
         grid.setContentsMargins(0, 0, 0, 0)
 
         direction = Qt.RightToLeft if is_rtl(self.language) else Qt.LeftToRight
+        local_container = QWidget(self.tab_local)
+        local_container.setStyleSheet("background: transparent; border: none;")
+        local_layout = QVBoxLayout(local_container)
+        local_layout.setContentsMargins(0, 0, 0, 0)
+        local_layout.setSpacing(0)
+
+        self.gpu_upgrade_banner = GpuUpgradeBanner(local_container)
+        self.gpu_upgrade_banner.upgrade_requested.connect(self.start_gpu_engine_upgrade)
+        local_layout.addWidget(self.gpu_upgrade_banner)
+
         self.local_section = JobQueueSection("Local (GPU)", self.queue_manager, self.config)
         self.local_section.setLayoutDirection(direction)
         self.local_section.add_media_clicked.connect(lambda: self.add_media("Local (GPU)"))
         self.local_section.download_model_clicked.connect(self.download_local_model)
-        grid.addWidget(self.local_section, 0, 0)
+        self.local_section.abort_job_clicked.connect(self._on_local_job_aborted)
+        local_layout.addWidget(self.local_section, 1)
+
+        grid.addWidget(local_container, 0, 0)
 
         if not DependencyManager.has_local_engine():
             blur = QGraphicsBlurEffect()
@@ -344,8 +420,17 @@ class MainWindow(QMainWindow):
             )
             self.engine_overlay.btn_download.clicked.connect(self.start_engine_download)
             grid.addWidget(self.engine_overlay, 0, 0)
+        elif DependencyManager.needs_gpu_engine_upgrade():
+            self.gpu_upgrade_banner.setVisible(True)
+
+    def _on_local_job_aborted(self, job_id: str):
+        local_th = getattr(self, 'local_thread', None)
+        if local_th is not None and hasattr(local_th, 'abort_current_job'):
+            local_th.abort_current_job(job_id)
 
     def start_engine_download(self):
+        if getattr(self, 'engine_thread', None) is not None and self.engine_thread.isRunning():
+            return
         self.engine_overlay.set_downloading()
         self.engine_thread = EngineDownloader()
         self.engine_thread.progress_update.connect(self.engine_overlay.progress.setValue)
@@ -355,40 +440,177 @@ class MainWindow(QMainWindow):
 
     def on_engine_downloaded(self, success: bool, message: str):
         if success:
-            self.engine_overlay.spinner.stop()
-            self.engine_overlay.setVisible(False)
+            if getattr(self, 'engine_overlay', None) is not None:
+                self.engine_overlay.spinner.stop()
+                self.engine_overlay.setVisible(False)
             self.local_section.setGraphicsEffect(None)
             self.local_section.setEnabled(True)
             self.local_section.update_model_button_state()
+            if getattr(self, 'gpu_upgrade_banner', None) is not None:
+                self.gpu_upgrade_banner.setVisible(DependencyManager.needs_gpu_engine_upgrade())
         else:
-            self.engine_overlay.set_error(t("engine_status_failed", message=message))
+            if getattr(self, 'engine_overlay', None) is not None:
+                self.engine_overlay.set_error(t("engine_status_failed", message=message))
+
+    def start_gpu_engine_upgrade(self):
+        if getattr(self, 'engine_thread', None) is not None and self.engine_thread.isRunning():
+            return
+
+        # Refuse upgrade while a local job (pending or active) or model download is running
+        has_active_local_job = any(
+            j.get("mode") == "Local (GPU)"
+            and j.get("status") in ["PENDING", "EXTRACTING", "PROCESSING_LOCAL", "REMUXING"]
+            for j in self.queue_manager.get_all_jobs().values()
+        )
+        model_running = (
+            getattr(self, 'model_thread', None) is not None and self.model_thread.isRunning()
+        )
+        if has_active_local_job or model_running:
+            QMessageBox.information(self, t("gpu_banner_busy_title"), t("gpu_banner_busy_msg"))
+            return
+
+        self.local_section.setEnabled(False)
+        if getattr(self.local_section, 'dropzone_widget', None) is not None:
+            self.local_section.dropzone_widget.setEnabled(False)
+
+        self.gpu_upgrade_banner.set_upgrading()
+        self.engine_thread = EngineDownloader(upgrade_to_gpu=True)
+        self.engine_thread.progress_update.connect(self.gpu_upgrade_banner.set_progress)
+        self.engine_thread.status_update.connect(self.gpu_upgrade_banner.set_status_message)
+        self.engine_thread.finished_download.connect(self.on_gpu_upgrade_finished)
+        self.engine_thread.start()
+
+    def on_gpu_upgrade_finished(self, success: bool, message: str):
+        if success:
+            self.gpu_upgrade_banner.reset_idle()
+            self.gpu_upgrade_banner.setVisible(False)
+            self.local_section.setEnabled(True)
+            if getattr(self.local_section, 'dropzone_widget', None) is not None:
+                self.local_section.dropzone_widget.setEnabled(True)
+            self.local_section.update_model_button_state()
+            QMessageBox.information(self, t("gpu_banner_success_title"), t("gpu_banner_success_msg"))
+        else:
+            logger.error(f"GPU engine upgrade failed: {message}")
+            engine_still_valid = DependencyManager.has_local_engine()
+            if engine_still_valid:
+                self.local_section.setEnabled(True)
+                if getattr(self.local_section, 'dropzone_widget', None) is not None:
+                    self.local_section.dropzone_widget.setEnabled(True)
+            display_msg = message
+            if "\n" in message or len(message) > 220:
+                display_msg, _ = classify_local_error(message)
+            self.gpu_upgrade_banner.set_error(
+                t("engine_status_failed", message=display_msg),
+                allow_dismiss=engine_still_valid,
+            )
+
+    def _retire_model_thread(self, thread) -> None:
+        if thread is None:
+            return
+        if getattr(thread, "_ep_retired", False):
+            return
+        thread._ep_retired = True
+        try:
+            if thread.isRunning():
+                thread.wait(500)
+        except Exception:
+            pass
+        retired = getattr(self, "_retired_model_threads", None)
+        if retired is not None:
+            try:
+                if thread in retired:
+                    retired.remove(thread)
+            except Exception:
+                pass
+        try:
+            thread.deleteLater()
+        except Exception:
+            pass
 
     def download_local_model(self, model_name: str, subfolder: str):
+        existing = getattr(self, 'model_thread', None)
+        if existing is not None:
+            try:
+                if existing.isRunning():
+                    return
+            except RuntimeError:
+                self.model_thread = None
+            else:
+                self._retire_model_thread(existing)
+                self.model_thread = None
+
         friendly_name = self.local_section._get_friendly_model_name()
-        self.local_section.btn_add.setEnabled(False)
-        self.local_section.set_download_progress(0, friendly_name)
+        self.local_section.set_model_downloading(True)
+        self.local_section.set_download_progress(0, friendly_name, "")
 
         models_dir = os.path.join(self.config.appdata_dir, "models", subfolder)
         os.makedirs(models_dir, exist_ok=True)
 
-        self.model_thread = ModelDownloader(model_name, models_dir)
-        self.model_thread.progress_update.connect(
-            lambda pct: self.local_section.set_download_progress(pct, friendly_name)
+        thread = ModelDownloader(model_name, models_dir)
+        self.model_thread = thread
+        thread.progress_detail.connect(
+            lambda pct, speed, th=thread, fn=friendly_name: (
+                self.local_section.set_download_progress(pct, fn, speed)
+                if self.model_thread is th else None
+            )
         )
-        self.model_thread.finished_download.connect(self.on_model_downloaded)
-        self.model_thread.start()
+        thread.finished_download.connect(
+            lambda ok, msg, th=thread: self.on_model_downloaded(ok, msg, th)
+        )
+        try:
+            thread.finished.connect(lambda th=thread: self._retire_model_thread(th))
+        except Exception:
+            pass
+        thread.start()
 
-    def on_model_downloaded(self, success: bool, message: str):
+    def on_model_downloaded(self, success: bool, message: str, thread=None):
+        active_thread = getattr(self, 'model_thread', None)
+        if thread is not None and active_thread is not None and thread is not active_thread:
+            return
+        finished_thread = thread if thread is not None else active_thread
+
+        raw_details = getattr(finished_thread, "last_error_details", "") if finished_thread else ""
+        is_ffmpeg_err = getattr(finished_thread, "last_error_is_ffmpeg", False) if finished_thread else False
+
+        if finished_thread is not None and finished_thread is active_thread:
+            self.model_thread = None
+            try:
+                if finished_thread.isRunning():
+                    finished_thread.wait(500)
+            except Exception:
+                pass
+            if not getattr(finished_thread, "_ep_retired", False):
+                retired = getattr(self, "_retired_model_threads", None)
+                if retired is not None and finished_thread not in retired:
+                    retired.append(finished_thread)
+
+        self.local_section.set_model_downloading(False)
         self.local_section.reset_download_progress()
-        self.local_section.btn_add.setEnabled(True)
         self.local_section.update_model_button_state()
+
         if not success:
-            QMessageBox.critical(self, t("alert_download_failed_title"), t("alert_download_failed_msg", message=message))
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle(t("alert_download_failed_title"))
+            box.setText(t("alert_download_failed_msg", message=message))
+            if raw_details:
+                box.setDetailedText(raw_details)
+            box.exec()
+
+            if is_ffmpeg_err or not DependencyManager.has_ffmpeg():
+                self.check_ffmpeg()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, 'ffmpeg_overlay') and self.ffmpeg_overlay.isVisible():
-            self.ffmpeg_overlay.resize(self.width(), self.height())
+        overlay = getattr(self, 'ffmpeg_overlay', None)
+        if overlay is not None:
+            try:
+                if overlay.isVisible():
+                    cw = self.centralWidget()
+                    overlay.resize(cw.size() if cw is not None else self.size())
+                    overlay.raise_()
+            except RuntimeError:
+                self.ffmpeg_overlay = None
 
     def switch_view(self, index: int):
         self.stack.setCurrentIndex(index)
@@ -566,7 +788,20 @@ class MainWindow(QMainWindow):
             self._is_adding_media = False
 
     def on_job_error(self, jid: str, error_msg: str):
-        QMessageBox.critical(self, t("alert_job_err_title"), t("alert_job_err_msg", error=error_msg))
+        marker = "\n\n--- Details"
+        if marker in error_msg:
+            summary, details = error_msg.split(marker, 1)
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle(t("alert_job_err_title"))
+            box.setText(t("alert_job_err_msg", error=summary.strip()))
+            box.setDetailedText(f"--- Details{details}".strip())
+            box.exec()
+        else:
+            QMessageBox.critical(self, t("alert_job_err_title"), t("alert_job_err_msg", error=error_msg))
+
+        if is_ffmpeg_missing_error(error_msg):
+            self.check_ffmpeg()
 
     def on_verification_warning(self, job_id: str, model_name: str, warning_type: str):
         if warning_type == "UNVERIFIED":
@@ -628,6 +863,12 @@ class MainWindow(QMainWindow):
                 getattr(self, n, None) for n in
                 ['cloud_thread', 'local_thread', 'ffmpeg_thread', 'engine_thread', 'model_thread', 'update_checker']
             ]
+            for rt in list(getattr(self, "_retired_model_threads", []) or []):
+                try:
+                    if rt is not None and rt.isRunning():
+                        threads.append(rt)
+                except RuntimeError:
+                    pass
             terminate_qt_threads([t for t in threads if t is not None], timeout_ms=1500)
             cleanup_all_subprocesses()
         except Exception:

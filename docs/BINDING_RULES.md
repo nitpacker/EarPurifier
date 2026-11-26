@@ -1,6 +1,6 @@
 # Engineering Invariants & Binding Rules
 
-*Verified against codebase (v0.0.1).*
+*Verified against codebase (v1.0.1).*
 
 ---
 
@@ -60,6 +60,7 @@
 | 10 | **Active Cloud GPU Session Assertion (Anti-CPU Trap)**: Kaggle worker scripts MUST assert that `"CUDAExecutionProvider"` is present in the active model inference session (`model_run.get_providers()`), aborting in under 5s if absent; relying only on `ort.get_available_providers()` allows silent CPU fallback that burns 25 minutes of GPU quota. | CRITICAL — Cloud Quota | `worker/worker.py` (lines around `CUDAExecutionProvider` check) |
 | 11 | **Cloud Quota Teardown on Abort / Close**: Aborting a job or confirming application exit via `CloseActiveJobDialog` MUST cancel the remote Kaggle kernel via `bridge.cancel_kernel()` and delete the remote dataset buffer; simply terminating local threads leaves the cloud kernel burning the user's weekly 30-hour GPU quota. | CRITICAL — Cloud Quota | `ui/main_window.py` (`closeEvent`), `processor_thread.py` (`stop`, `_handle_abort`) |
 | 12 | **Settings Save Mid-Job Connection Severing Guard**: In `MainWindow.open_settings()`, background threads and `KaggleBridge` MUST ONLY be re-initialized if credentials (`kaggle_username`, `kaggle_api_key`) have strictly mutated; re-initializing unconditionally severs active connection pools and orphans in-flight cloud jobs. | CRITICAL — Network Resiliency | `ui/main_window.py` (`MainWindow.open_settings`) |
+| 12a | **Local Engine Pip Constraints Lock & CUDA 12 `onnxruntime-gpu<1.27.0` Pin**: Local Engine installation MUST install `torch` and `torchvision` together from the selected CUDA 12 / CPU wheel index, lock their exact installed versions via a temporary `constraints.txt` (`-c`) during `audio-separator` installation, pin `"onnxruntime-gpu<1.27.0"` (CUDA 12) for GPU installs, and verify `bool(torch.version.cuda)` before writing `.engine_installed`. Omitting `torchvision` or constraints causes `audio-separator -> onnx2torch-py313` to silently overwrite CUDA PyTorch with PyPI CPU-only `torch`; unpinned `onnxruntime-gpu>=1.27.0` breaks CUDA 12 drivers. | CRITICAL — Local GPU Integrity | `dependency_manager.py` (`EngineDownloader.run`) |
 
 ---
 
@@ -86,6 +87,8 @@
 | 27 | **Extended Cloud Polling Resilience**: The Kaggle status polling loop must allow at least 60 retries with 60-second backoff; small retry limits cause jobs to fail prematurely during transient home network or Kaggle gateway outages. | MODERATE — Cloud Resiliency | `processor_thread.py` (`JobProcessor.run`) |
 | 28 | **Strict English Background Isolation**: Queue states (`PENDING`, `COMPLETED`, `ABORTED`) and model identifiers must strictly remain in English in storage and backend threads. Translating internal strings breaks state recovery and queue filtering. | MODERATE — State Integrity | `queue_manager.py`, `i18n.py` (translation at UI boundary only) |
 | 29 | **AI Model Substring Matching Contract**: Model names (`RoFormer`, `MDX23C`, `Kim Vocal 2`) must preserve their exact substrings in settings and UI; backend lookups map these substrings to exact Kaggle dataset filenames. | MODERATE — Model Loading | `local_processor.py`, `processor_thread.py`, `ui/dialogs.py` |
+| 29a | **Subprocess UTF-8 & Managed Binary `PATH` Parity**: All local engine and media subprocesses MUST set `PYTHONUTF8=1`, `PYTHONIOENCODING=utf-8`, pass `encoding="utf-8", errors="replace"`, and build `PATH` via `DependencyManager.get_engine_subprocess_env()` (dynamically including managed bin dirs and `os.path.dirname(get_executable("ffmpeg"|"ffprobe"))`). Missing managed bin dirs triggers `FileNotFoundError: FFmpeg is not installed`, and missing UTF-8 triggers `UnicodeDecodeError` on Arabic/non-ASCII Windows (`cp1256`). | MODERATE — Subprocess Reliability | `system_utils.py`, `dependency_manager.py`, `local_processor.py`, `media_engine.py` |
+| 29b | **No `cuInit(0)` in Main GUI Process**: Host GPU detection on the GUI thread (`DependencyManager.has_nvidia_gpu()`) MUST remain cached per platform and strictly avoid calling `cuInit(0)`. Deep CUDA driver/device probing (`cuDriverGetVersion`, `cuInit(0)`, `cuDeviceGetAttribute`) is permitted ONLY inside `EngineDownloader`'s isolated background `env_python` subprocess; calling `cuInit(0)` in the GUI process wakes discrete Optimus/MUX GPUs on laptops and drains battery even in Cloud mode. | MODERATE — Hardware / Power | `dependency_manager.py` (`has_nvidia_gpu`, `EngineDownloader._probe_cuda_hardware`) |
 
 ---
 

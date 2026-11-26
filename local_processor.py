@@ -5,17 +5,18 @@ import subprocess
 import logging
 import re
 import shutil
+from typing import Optional
 from PySide6.QtCore import QThread, Signal
 try:
     from .queue_manager import QueueManager
     from .media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
     from .config_manager import ConfigManager
-    from .dependency_manager import DependencyManager
+    from .dependency_manager import DependencyManager, classify_local_error
 except ImportError:
     from queue_manager import QueueManager
     from media_engine import extract_audio, pad_or_trim_audio, remux_media, get_duration, probe_container
     from config_manager import ConfigManager
-    from dependency_manager import DependencyManager
+    from dependency_manager import DependencyManager, classify_local_error
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,29 @@ class LocalJobProcessor(QThread):
         self.config = config
         self.running = True
         self.current_process = None
+        self.current_job_id: Optional[str] = None
+
+    def abort_current_job(self, job_id: str) -> bool:
+        """
+        Immediately terminates the active subprocess for `job_id` so blocking
+        stdout.readline() unblocks instantaneously on user abort.
+        """
+        if not job_id or self.current_job_id != job_id:
+            return False
+        proc = self.current_process
+        if proc is None:
+            return False
+        try:
+            try:
+                from .process_tracker import kill_process_tree
+            except ImportError:
+                from process_tracker import kill_process_tree
+            kill_process_tree(proc.pid)
+            proc.kill()
+            return True
+        except Exception as e:
+            logger.debug(f"abort_current_job failed to terminate process for {job_id}: {e}")
+            return False
 
     def run(self):
         while self.running:
@@ -106,9 +130,12 @@ class LocalJobProcessor(QThread):
     def process_local_job(self, job_id, job):
         if not DependencyManager.has_local_engine():
             raise RuntimeError("Local Engine is not installed.")
+        if not DependencyManager.has_ffmpeg():
+            raise RuntimeError("FFmpeg is not installed. Please restart or download FFmpeg to process audio locally.")
 
         temp_dir = os.path.join(self.config.appdata_dir, "temp", job_id)
         os.makedirs(temp_dir, exist_ok=True)
+        self.current_job_id = job_id
         is_aborted = lambda: not self.running or self.queue_manager.is_job_aborted(job_id)
 
         if is_aborted():
@@ -193,25 +220,22 @@ class LocalJobProcessor(QThread):
             self._log(job_id, f"Model {model_name} initialized. Processing audio...")
             
             # Direct stderr into stdout to form a single stream and avoid pipe buffer deadlocks
-            kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
+            kwargs = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "bufsize": 1,
+            }
             try:
-                from system_utils import get_subprocess_spawn_kwargs, get_clean_subprocess_env
+                from system_utils import get_subprocess_spawn_kwargs
             except ImportError:
-                from .system_utils import get_subprocess_spawn_kwargs, get_clean_subprocess_env
+                from .system_utils import get_subprocess_spawn_kwargs
             kwargs.update(get_subprocess_spawn_kwargs())
-                
-            env_dir = DependencyManager.get_env_dir()
-            if sys.platform == "win32":
-                env = get_clean_subprocess_env([
-                    env_dir,
-                    os.path.join(env_dir, "Library", "mingw-w64", "bin"),
-                    os.path.join(env_dir, "Library", "usr", "bin"),
-                    os.path.join(env_dir, "Library", "bin"),
-                    os.path.join(env_dir, "Scripts")
-                ])
-            else:
-                env = get_clean_subprocess_env([os.path.join(env_dir, "bin")])
-                
+
+            env = DependencyManager.get_engine_subprocess_env()
+
             self.current_process = subprocess.Popen(cmd, env=env, **kwargs)
             try:
                 from .process_tracker import register_process, unregister_process
@@ -259,15 +283,10 @@ class LocalJobProcessor(QThread):
             full_output = "".join(captured_output)
 
             if process.returncode != 0:
-                if sys.platform == "win32" and "DLL load failed" in full_output:
-                    error_msg = (
-                        "Missing Microsoft Visual C++ Redistributable.\n"
-                        "Please download and install it from Microsoft:\n"
-                        "https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n"
-                        "(Restart the app after installing)"
-                    )
-                    raise RuntimeError(error_msg)
-                raise RuntimeError(f"AI Engine failed (exit code {process.returncode}):\n{full_output.strip()}")
+                summary, raw_details = classify_local_error(full_output)
+                if raw_details and raw_details != summary:
+                    raise RuntimeError(f"{summary}\n\n--- Details (exit code {process.returncode}) ---\n{raw_details}")
+                raise RuntimeError(f"{summary} (exit code {process.returncode})")
             
             # Identify vocal file with case-insensitive check
             clean_wav = None
@@ -334,6 +353,7 @@ class LocalJobProcessor(QThread):
                 except Exception:
                     pass
             self.current_process = None
+            self.current_job_id = None
             # Always cleanup the temp directory for this job to prevent disk bloat
             try:
                 if os.path.exists(temp_dir):

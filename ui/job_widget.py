@@ -28,6 +28,18 @@ except ImportError:
 
 # ─── Model & Stage ETA Estimators ─────────────────────────────────────────────
 
+def _has_active_local_gpu() -> bool:
+    """Returns True only when host has an NVIDIA GPU AND local engine is not stuck on CPU."""
+    has_gpu = DependencyManager.has_nvidia_gpu() if hasattr(DependencyManager, "has_nvidia_gpu") else False
+    if has_gpu and hasattr(DependencyManager, "needs_gpu_engine_upgrade"):
+        try:
+            if DependencyManager.needs_gpu_engine_upgrade():
+                return False
+        except Exception:
+            pass
+    return has_gpu
+
+
 def get_local_model_rtf(model_name: str, has_gpu: bool) -> tuple[float, float]:
     """Returns (rtf_multiplier, warmup_seconds) for local hardware execution."""
     m = (model_name or "").lower()
@@ -521,7 +533,7 @@ class JobWidget(QWidget):
             elif status == "PENDING":
                 self.lbl_eta.setText(t("eta_in_queue"))
         else:
-            has_gpu = DependencyManager.has_nvidia_gpu() if hasattr(DependencyManager, "has_nvidia_gpu") else False
+            has_gpu = _has_active_local_gpu()
             local_est = compute_local_stage_estimates(self.duration, model_name, has_gpu)
             if status == "EXTRACTING":
                 rem = int(round(local_est["EXTRACTING"] + local_est["WARMUP"] + local_est["INFERENCE"] + local_est["REMUXING"]))
@@ -772,7 +784,7 @@ class JobWidget(QWidget):
                         r_obs = p_infer / delta_t
                         t_base = getattr(self, "_infer_baseline_time", 0.0)
                         if t_base <= 0.0 and self.duration > 0.0:
-                            has_gpu = DependencyManager.has_nvidia_gpu() if hasattr(DependencyManager, "has_nvidia_gpu") else False
+                            has_gpu = _has_active_local_gpu()
                             local_est = compute_local_stage_estimates(self.duration, self.job_dict.get("model", ""), has_gpu)
                             t_base = local_est["INFERENCE"]
                             self._infer_baseline_time = t_base

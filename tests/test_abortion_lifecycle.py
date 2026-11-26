@@ -313,6 +313,7 @@ class TestAbortionLifecycle(unittest.TestCase):
         mock_proc.poll.return_value = None
 
         with patch("local_processor.DependencyManager.has_local_engine", return_value=True), \
+             patch("local_processor.DependencyManager.has_ffmpeg", return_value=True), \
              patch("local_processor.DependencyManager.get_engine_separator_exe", return_value="fake_separator.exe"), \
              patch("local_processor.DependencyManager.get_env_dir", return_value="fake_env"), \
              patch("local_processor.probe_container", return_value={"format": {"duration": "10.0"}, "audio_streams": [{"index": 0}]}), \

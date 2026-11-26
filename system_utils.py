@@ -97,7 +97,7 @@ def get_default_output_folder() -> str:
 def reveal_in_file_manager(target_path: str) -> None:
     """
     Reveals the file or folder in the platform's native file browser:
-    - Windows: explorer.exe /select, <path>
+    - Windows: explorer.exe /select,"<abs_path>"
     - macOS:   open -R <path>
     - Linux:   xdg-open <parent_dir> or QDesktopServices fallback
     Spawns asynchronously via Popen to prevent UI event loop freezes.
@@ -105,13 +105,20 @@ def reveal_in_file_manager(target_path: str) -> None:
     if not target_path or not os.path.exists(target_path):
         return
 
-    norm_path = os.path.normpath(target_path)
+    norm_path = os.path.abspath(os.path.normpath(target_path))
     current_os = get_current_os()
 
     if current_os == "windows":
         try:
-            # Note: explorer.exe /select, <path> requires commas or raw quotes
-            subprocess.Popen(["explorer.exe", f"/select,{norm_path}"])
+            # Windows explorer.exe rejects a quoted switch like `"/select,C:\path with spaces\file.mp4"`
+            # (which subprocess.list2cmdline generates when passing `f"/select,{norm_path}"` as a list
+            # item) and silently falls back to opening the Documents folder. Passing an unquoted
+            # `/select,` followed by a quoted absolute path handles spaces, commas, '&', and Unicode.
+            if os.path.isdir(norm_path) and norm_path.endswith("\\"):
+                subprocess.Popen(["explorer.exe", norm_path])
+            else:
+                safe_path = norm_path.replace('"', "")
+                subprocess.Popen(f'explorer.exe /select,"{safe_path}"')
         except Exception:
             try:
                 os.startfile(os.path.dirname(norm_path) if os.path.isfile(norm_path) else norm_path)
@@ -138,7 +145,7 @@ def open_directory(dir_path: str) -> None:
     """
     if not dir_path or not os.path.exists(dir_path):
         return
-    norm_path = os.path.normpath(dir_path)
+    norm_path = os.path.abspath(os.path.normpath(dir_path))
     if os.path.isfile(norm_path):
         norm_path = os.path.dirname(norm_path)
     QDesktopServices.openUrl(QUrl.fromLocalFile(norm_path))
@@ -162,11 +169,14 @@ def get_subprocess_spawn_kwargs(is_async: bool = False) -> dict:
 def get_clean_subprocess_env(extra_paths: Optional[list] = None) -> dict:
     """
     Builds a clean environment dictionary for spawning child processes:
+    - Enforces UTF-8 encoding (PYTHONUTF8=1, PYTHONIOENCODING=utf-8) for Arabic/Unicode safety.
     - Strips PyInstaller frozen application leaks (PYTHONHOME, PYTHONPATH, DYLD_*, LD_*)
       so external Python/Micromamba runtimes don't crash when loading libraries.
-    - Prepend extra_paths, local bin_dir, and standard OS tool paths (Homebrew on macOS).
+    - Prepends deduplicated extra_paths, managed bin dirs, and standard OS tool paths.
     """
     env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
 
     # Strip PyInstaller runtime leaks that corrupt child Python/Micromamba runtimes
     for var in (
@@ -176,29 +186,29 @@ def get_clean_subprocess_env(extra_paths: Optional[list] = None) -> dict:
         env.pop(var, None)
 
     path_entries = []
+
+    def _add_path(p: Optional[str]) -> None:
+        if p and p not in path_entries:
+            path_entries.append(p)
+
     if extra_paths:
-        path_entries.extend(extra_paths)
+        for p in extra_paths:
+            _add_path(p)
 
     # Space-free bin directory on macOS (~/.earpurifier/bin)
     if sys.platform == "darwin":
-        space_free_bin = os.path.expanduser("~/.earpurifier/bin")
-        if space_free_bin not in path_entries:
-            path_entries.append(space_free_bin)
+        _add_path(os.path.expanduser("~/.earpurifier/bin"))
 
     # Local EarPurifier bin directory (contains managed ffmpeg/ffprobe/micromamba or legacy binaries)
-    legacy_bin_dir = os.path.join(get_app_data_dir(), "bin")
-    if legacy_bin_dir not in path_entries:
-        path_entries.append(legacy_bin_dir)
+    _add_path(os.path.join(get_app_data_dir(), "bin"))
 
-    # macOS Homebrew and standard tool paths
+    # Standard POSIX / Homebrew tool paths
     if sys.platform == "darwin":
-        for hb in ("/opt/homebrew/bin", "/usr/local/bin"):
-            if hb not in path_entries:
-                path_entries.append(hb)
-    elif sys.platform.startswith("linux"):
-        user_bin = os.path.expanduser("~/.local/bin")
-        if user_bin not in path_entries:
-            path_entries.append(user_bin)
+        for p in ("/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin"), "/usr/bin", "/bin"):
+            _add_path(p)
+    elif sys.platform != "win32":
+        for p in ("/usr/local/bin", os.path.expanduser("~/.local/bin"), "/usr/bin", "/bin"):
+            _add_path(p)
 
     existing_path = env.get("PATH", "")
     if existing_path:

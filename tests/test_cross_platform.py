@@ -391,6 +391,7 @@ class TestCrossPlatformSupport(unittest.TestCase):
         real_exists = os.path.exists
         with patch("sys.platform", "darwin"), \
              patch("local_processor.DependencyManager.has_local_engine", return_value=True), \
+             patch("local_processor.DependencyManager.has_ffmpeg", return_value=True), \
              patch("local_processor.DependencyManager.get_engine_separator_exe", return_value="/env/bin/audio-separator"), \
              patch("local_processor.DependencyManager.get_engine_python", return_value="/env/bin/python"), \
              patch("local_processor.DependencyManager.get_env_dir", return_value="/env"), \
@@ -413,43 +414,56 @@ class TestCrossPlatformSupport(unittest.TestCase):
         from dependency_manager import EngineDownloader
         downloader = EngineDownloader()
 
+        spawned_cmds = []
+
+        def fake_popen(cmd, **kwargs):
+            spawned_cmds.append((cmd, kwargs))
+            proc = MagicMock()
+            proc.pid = 4242
+            proc.returncode = 0
+            if "-c" in cmd and any("version_info" in str(a) for a in cmd):
+                # Simulate existing python reporting 3.11 instead of expected 3.10 on macOS
+                proc.communicate.return_value = ("3.11\n", "")
+            elif "-c" in cmd and any("importlib.metadata" in str(a) and "torch==" in str(a) for a in cmd):
+                proc.communicate.return_value = ("torch==2.14.1\ntorchvision==0.29.2\n", "")
+            elif "-c" in cmd and any("audio_separator" in str(a) for a in cmd):
+                proc.communicate.return_value = (
+                    '{"torch_version": "2.14.1", "dist_version": "2.14.1", "cuda": null, "cuda_available": false, "mps_available": true}\n',
+                    "",
+                )
+            else:
+                proc.communicate.return_value = ("", "")
+            return proc
+
+        finished_events = []
+        downloader.finished_download.connect(lambda ok, msg: finished_events.append((ok, msg)))
+
         with patch("sys.platform", "darwin"), \
              patch.object(DependencyManager, "get_bin_dir", return_value="/test/bin"), \
              patch.object(DependencyManager, "get_env_dir", return_value="/test/env"), \
              patch.object(DependencyManager, "get_engine_python", return_value="/test/env/bin/python"), \
              patch.object(DependencyManager, "get_appdata_dir", return_value=test_appdata), \
              patch("os.path.exists", return_value=True), \
+             patch("os.remove"), \
              patch("shutil.rmtree") as mock_rmtree, \
-             patch("subprocess.run") as mock_run:
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("process_tracker.register_process"), \
+             patch("process_tracker.unregister_process"):
 
-            # Simulate existing python reporting 3.11 instead of expected 3.10 on macOS
-            ver_res = MagicMock()
-            ver_res.returncode = 0
-            ver_res.stdout = "3.11\n"
-
-            create_res = MagicMock()
-            create_res.returncode = 0
-
-            pip_res = MagicMock()
-            pip_res.returncode = 0
-
-            def fake_run(cmd, **kwargs):
-                if "-c" in cmd:
-                    return ver_res
-                elif "create" in cmd:
-                    return create_res
-                return pip_res
-
-            mock_run.side_effect = fake_run
             with patch("builtins.open", mock_open()):
                 downloader.run()
 
+            self.assertEqual(finished_events, [(True, "Success")])
             # Confirm legacy env cleanup + rebuild rmtree were called
             self.assertTrue(mock_rmtree.called)
             # Confirm micromamba create was called with python=3.10
-            create_calls = [call for call in mock_run.call_args_list if "create" in call[0][0]]
+            create_calls = [cmd for cmd, _ in spawned_cmds if "create" in cmd]
             self.assertTrue(len(create_calls) > 0)
-            self.assertIn("python=3.10", create_calls[0][0][0])
+            self.assertIn("python=3.10", create_calls[0])
+            # Confirm constraints lock (-c) was passed when installing audio-separator[cpu]
+            sep_calls = [cmd for cmd, _ in spawned_cmds if "audio-separator[cpu]" in cmd]
+            self.assertTrue(len(sep_calls) > 0)
+            self.assertIn("-c", sep_calls[0])
 
     def test_model_downloader_escapes_paths_and_cleans_temp_script(self):
         """Verify ModelDownloader uses safe repr formatting and cleans up temp_download.py in finally."""
@@ -524,6 +538,31 @@ class TestCrossPlatformSupport(unittest.TestCase):
                     res = DependencyManager.get_executable("ffmpeg")
                     self.assertIsNotNone(res)
                     self.assertEqual(os.path.normpath(res), target_bin)
+
+    def test_reveal_in_file_manager_windows_quoting_spaces_commas_and_unicode(self):
+        """Windows reveal_in_file_manager passes unquoted /select, with quoted absolute path (never opens Documents)."""
+        with tempfile.TemporaryDirectory(prefix="ep folder with spaces ") as tmp_dir:
+            test_names = [
+                "1 Minute Sample Video_purified.mp4",
+                "clip,part2_purified.mp4",
+                "فيديو تجريبي_purified.mp4",
+            ]
+            for name in test_names:
+                fpath = os.path.join(tmp_dir, name)
+                with open(fpath, "wb") as f:
+                    f.write(b"data")
+                # Also test forward-slash input (as returned by QFileDialog on Windows)
+                forward_path = fpath.replace("\\", "/")
+                expected_abs = os.path.abspath(os.path.normpath(fpath))
+                with patch("system_utils.get_current_os", return_value="windows"), \
+                     patch("subprocess.Popen") as mock_popen:
+                    reveal_in_file_manager(forward_path)
+                    mock_popen.assert_called_once()
+                    cmd_arg = mock_popen.call_args[0][0]
+                    self.assertIsInstance(cmd_arg, str)
+                    self.assertEqual(cmd_arg, f'explorer.exe /select,"{expected_abs}"')
+                    # Crucial invariant: /select, must NOT be preceded by a quote!
+                    self.assertNotIn('"/select,', cmd_arg)
 
 
 if __name__ == "__main__":

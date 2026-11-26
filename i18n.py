@@ -45,9 +45,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_add_media": "＋ إضافة ملفات",
         "btn_download_model": "⬇ تنزيل {model} ({size})",
         "btn_downloading_model": "⬇ جارٍ تنزيل {model}... {pct}٪",
+        "btn_downloading_model_speed": "⬇ جارٍ تنزيل {model}... {pct}٪ ({speed})",
+        "btn_reconnecting_model": "⬇ جارٍ إعادة الاتصال لتنزيل {model}... {pct}٪",
+        "btn_verifying_model": "⬇ جارٍ التحقق من {model}...",
         "engine_step_env": "المرحلة 1/3: إعداد البيئة المعزولة...",
         "engine_step_torch": "المرحلة 2/3: تثبيت معالج الذكاء الاصطناعي...",
         "engine_step_separator": "المرحلة 3/3: تثبيت أداة فصل الصوت...",
+        "engine_step_verify": "جارٍ التحقق من سلامة المحرك المحلي...",
+        "ffmpeg_step_downloading": "جارٍ تنزيل أدوات FFmpeg...",
+        "ffmpeg_step_extracting": "جارٍ تجهيز ملفات FFmpeg...",
         "btn_select_mode": "تحديد",
         "btn_exit_selection": "إلغاء التحديد",
         "btn_clear_history": "مسح",
@@ -229,6 +235,27 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "phone_reminder_title": "تذكير: متطلبات النموذج",
         "phone_reminder_msg": "تذكير: النموذج المختار ({model}) يتطلب حساب Kaggle موثقاً برقم الهاتف، وإلا فلن يعمل النموذج.",
         "btn_dismiss": "حسناً",
+
+        # GPU Upgrade Banner (Non-blocking, concise)
+        "gpu_banner_title": "يتوفر تسريع للمعالجة المحلية",
+        "gpu_banner_desc": "بطاقة الرسوميات NVIDIA في جهازك غير مفعّلة بعد. انقر مرة واحدة لتنزيل دعم البطاقة (~2.6 جيجابايت) والحصول على معالجة أسرع بكثير.",
+        "gpu_banner_btn_upgrade": "تفعيل تسريع البطاقة",
+        "gpu_banner_btn_retry": "إعادة المحاولة",
+        "gpu_banner_upgrading": "جارٍ تجهيز المحرك المحلي لبطاقة الرسوميات...",
+        "gpu_banner_busy_title": "المحرك المحلي مشغول",
+        "gpu_banner_busy_msg": "يرجى الانتظار حتى تنتهي المهام المحلية وتنزيلات النماذج الحالية قبل بدء الترقية.",
+        "gpu_banner_success_title": "تم تفعيل تسريع البطاقة",
+        "gpu_banner_success_msg": "المحرك المحلي جاهز الآن للاستفادة من بطاقة الرسوميات NVIDIA.",
+        "gpu_banner_driver_old": "تعريف بطاقة رسوميات NVIDIA في جهازك قديم جداً لدعم التسريع. يرجى تحديث تعريف NVIDIA ثم المحاولة مجدداً.",
+
+        # Classified Local Error Summaries
+        "err_local_ffmpeg_missing": "لم يتم العثور على أداة FFmpeg المطلوبة لتنزيل النماذج ومعالجة الصوت. يرجى تنزيلها عند ظهور النافذة.",
+        "err_local_vcredist_missing": "ينقص نظام Windows حزمة Microsoft Visual C++ Redistributable اللازمة لتشغيل المحرك المحلي.\n\nيرجى تنزيلها وتثبيتها من:\nhttps://aka.ms/vs/17/release/vc_redist.x64.exe\n\n(أعد تشغيل التطبيق بعد التثبيت)",
+        "err_local_cuda_oom": "نفدت ذاكرة بطاقة الرسوميات (VRAM) مع هذا النموذج. جرّب اختيار MDX23C أو Kim Vocal 2 من الإعدادات، أو استخدم المحرك السحابي.",
+        "err_local_disk_full": "لا توجد مساحة تخزين كافية لإكمال العملية. يرجى تفريغ بعض المساحة والمحاولة مجدداً.",
+        "err_local_checksum_mismatch": "يبدو أن الملف الذي تم تنزيله غير مكتمل أو تالف. يرجى المحاولة مجدداً.",
+        "err_local_network_error": "حدث خطأ في الاتصال بالإنترنت أو انتهت المهلة أثناء التنزيل. يرجى التحقق من الاتصال والمحاولة مجدداً.",
+        "err_local_generic": "حدث خطأ أثناء تشغيل المحرك المحلي. يمكنك فتح التفاصيل أدناه لمراجعة السجل التقني.",
     },
 
     "en": {
@@ -255,9 +282,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_add_media": "＋ Add Media",
         "btn_download_model": "⬇ Download {model} ({size})",
         "btn_downloading_model": "⬇ Downloading {model}... {pct}%",
+        "btn_downloading_model_speed": "⬇ Downloading {model}... {pct}% ({speed})",
+        "btn_reconnecting_model": "⬇ Reconnecting {model}... {pct}%",
+        "btn_verifying_model": "⬇ Verifying {model}...",
         "engine_step_env": "Step 1/3: Setting up isolated environment...",
         "engine_step_torch": "Step 2/3: Installing AI core...",
         "engine_step_separator": "Step 3/3: Installing Audio Separator...",
+        "engine_step_verify": "Verifying Local AI Engine installation...",
+        "ffmpeg_step_downloading": "Downloading FFmpeg tools...",
+        "ffmpeg_step_extracting": "Preparing FFmpeg files...",
         "btn_select_mode": "Select",
         "btn_exit_selection": "Exit",
         "btn_clear_history": "Clear",
@@ -439,6 +472,27 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "phone_reminder_title": "Reminder: Model Requirements",
         "phone_reminder_msg": "Reminder: The selected model ({model}) requires a phone-verified Kaggle account or it will hang and fail.",
         "btn_dismiss": "OK",
+
+        # GPU Upgrade Banner (Non-blocking, concise)
+        "gpu_banner_title": "Faster Local Processing Available",
+        "gpu_banner_desc": "Your NVIDIA graphics card isn't active yet. Click once to download GPU support (~2.6 GB) for much faster audio separation.",
+        "gpu_banner_btn_upgrade": "Enable GPU Acceleration",
+        "gpu_banner_btn_retry": "Retry",
+        "gpu_banner_upgrading": "Upgrading local engine for your graphics card...",
+        "gpu_banner_busy_title": "Local Engine Busy",
+        "gpu_banner_busy_msg": "Please wait for active local jobs and model downloads to finish before upgrading.",
+        "gpu_banner_success_title": "GPU Acceleration Enabled",
+        "gpu_banner_success_msg": "Your local engine is now ready to use your NVIDIA graphics card.",
+        "gpu_banner_driver_old": "Your NVIDIA graphics driver is too old for GPU acceleration. Please update your NVIDIA driver and try again.",
+
+        # Classified Local Error Summaries
+        "err_local_ffmpeg_missing": "FFmpeg was not found. EarPurifier needs FFmpeg to download models and process audio. Please download FFmpeg when prompted.",
+        "err_local_vcredist_missing": "Your Windows system is missing the Microsoft Visual C++ Redistributable required to run the local AI engine.\n\nPlease download and install it from Microsoft:\nhttps://aka.ms/vs/17/release/vc_redist.x64.exe\n\n(Restart the app after installing)",
+        "err_local_cuda_oom": "Your graphics card ran out of video memory (VRAM) for this model. Try switching to MDX23C or Kim Vocal 2 in Settings, or use the Cloud Engine.",
+        "err_local_disk_full": "Not enough free disk space to complete this operation. Please free up storage space and try again.",
+        "err_local_checksum_mismatch": "The downloaded file appears incomplete or corrupted. Please try downloading it again.",
+        "err_local_network_error": "A network error or timeout occurred while downloading. Please check your internet connection and try again.",
+        "err_local_generic": "An error occurred while running the local engine. Open Details below for technical logs.",
     }
 }
 
@@ -465,7 +519,10 @@ WORKER_MESSAGE_KEY_MAP = {
     "Building isolated Python environment... (Step 1/3)": "engine_step_env",
     "NVIDIA GPU detected. Installing PyTorch CUDA acceleration... (Step 2/3)": "engine_step_torch",
     "Installing PyTorch CPU engine... (Step 2/3)": "engine_step_torch",
+    "Installing PyTorch (Apple Silicon Metal / CPU)... (Step 2/3)": "engine_step_torch",
     "Installing Audio Separator... (Step 3/3)": "engine_step_separator",
+    "Verifying Local AI Engine installation...": "engine_step_verify",
+    "Extracting FFmpeg binaries...": "ffmpeg_step_extracting",
 }
 
 
@@ -625,12 +682,18 @@ def translate_worker_message(msg: str) -> str:
         return t("msg_waiting_kaggle_gpu")
 
     # Return original message if no match found
-    # Engine installation milestones
+    # Engine & FFmpeg installation milestones
     if "step 1/3" in msg_lower or "isolated python environment" in msg_lower:
         return t("engine_step_env")
     if "step 2/3" in msg_lower or "pytorch" in msg_lower:
         return t("engine_step_torch")
     if "step 3/3" in msg_lower or "audio separator" in msg_lower:
         return t("engine_step_separator")
+    if "verifying local ai engine" in msg_lower:
+        return t("engine_step_verify")
+    if "downloading ffmpeg" in msg_lower or "downloading ffprobe" in msg_lower:
+        return t("ffmpeg_step_downloading")
+    if "extracting ffmpeg" in msg_lower:
+        return t("ffmpeg_step_extracting")
 
     return msg

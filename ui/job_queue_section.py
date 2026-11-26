@@ -2,6 +2,7 @@ import os
 import logging
 import subprocess
 import webbrowser
+from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QListWidget, QListWidgetItem, QMessageBox, QMenu
@@ -43,6 +44,7 @@ class JobQueueSection(QWidget):
     add_media_clicked = Signal()
     add_video_clicked = add_media_clicked
     download_model_clicked = Signal(str, str)
+    abort_job_clicked = Signal(str)
 
     def __init__(self, mode: str, queue_manager: QueueManager, config: ConfigManager, parent=None):
         super().__init__(parent)
@@ -55,7 +57,11 @@ class JobQueueSection(QWidget):
         self.dropzone_item: QListWidgetItem = None
         self.dropzone_widget: DropZoneWidget = None
         self._model_needs_download = False
-        self._model_size_txt = "~250 MB"
+        self._is_downloading_model = False
+        self._current_download_pct = 0
+        self._current_download_speed = ""
+        self._active_download_model_name = ""
+        self._model_size_txt = "~610 MB"
         self._theme_mode = Theme.get_mode()
 
         self.init_ui()
@@ -233,7 +239,10 @@ class JobQueueSection(QWidget):
         if hasattr(self, 'header_divider'):
             self.header_divider.setStyleSheet(f"background-color: {card_border}; border: none; max-height: 1px; min-height: 1px;")
 
-        self.btn_add.setStyleSheet(get_primary_button_qss(theme_mode))
+        if getattr(self, "_is_downloading_model", False):
+            self.set_download_progress(getattr(self, "_current_download_pct", 0))
+        else:
+            self.btn_add.setStyleSheet(get_primary_button_qss(theme_mode))
 
         self.ghost_group.setStyleSheet(f"""
             QFrame#ghostGroup {{
@@ -298,6 +307,8 @@ class JobQueueSection(QWidget):
         out_media = job.get("output_media") or job.get("output_video")
         if out_media and os.path.exists(out_media):
             reveal_in_file_manager(out_media)
+        elif out_media and os.path.isdir(os.path.dirname(os.path.abspath(out_media))):
+            open_directory(os.path.dirname(os.path.abspath(out_media)))
         else:
             self._open_output_folder()
 
@@ -357,6 +368,7 @@ class JobQueueSection(QWidget):
             if not self.dropzone_item:
                 dropzone = DropZoneWidget()
                 dropzone.clicked.connect(self._on_add_clicked)
+                dropzone.setEnabled(not getattr(self, "_is_downloading_model", False))
                 item = QListWidgetItem()
                 item.setSizeHint(dropzone.sizeHint())
                 item.setFlags(Qt.NoItemFlags)
@@ -457,6 +469,7 @@ class JobQueueSection(QWidget):
 
     def on_abort_job(self, job_id: str):
         self.queue_manager.abort_job(job_id)
+        self.abort_job_clicked.emit(job_id)
         if job_id in self.job_widgets:
             self.job_widgets[job_id].update_status("ABORTED")
             self.job_widgets[job_id].update_message(t("msg_aborted_by_user"))
@@ -494,6 +507,23 @@ class JobQueueSection(QWidget):
         else:
             return "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 
+    def set_model_downloading(self, active: bool):
+        self._is_downloading_model = bool(active)
+        self.btn_add.setEnabled(not self._is_downloading_model)
+        if getattr(self, "dropzone_widget", None) is not None:
+            self.dropzone_widget.setEnabled(not self._is_downloading_model)
+
+    @staticmethod
+    def _is_model_installed(models_dir: str, model_name: str, required_sidecar: str = "") -> bool:
+        model_path = os.path.join(models_dir, model_name)
+        if not (os.path.isfile(model_path) and os.path.getsize(model_path) > 0):
+            return False
+        if required_sidecar:
+            sidecar_path = os.path.join(models_dir, required_sidecar)
+            if not (os.path.isfile(sidecar_path) and os.path.getsize(sidecar_path) > 0):
+                return False
+        return True
+
     def update_model_button_state(self):
         if "Local" not in self.mode:
             return
@@ -501,25 +531,30 @@ class JobQueueSection(QWidget):
         friendly_name = self._get_friendly_model_name()
         if "mdx23c" in model_name.lower():
             display_name = t("local_engine_sub_mdx23c")
-            size_txt = "~150 MB"
+            size_txt = "~427 MB"
             subfolder = "MDX23C"
+            sidecar = "model_2_stem_full_band_8k.yaml"
         elif "kim" in model_name.lower():
             display_name = t("local_engine_sub_kim")
-            size_txt = "~110 MB"
+            size_txt = "~64 MB"
             subfolder = "Kim_Vocal_2"
+            sidecar = ""
         else:
             display_name = t("local_engine_sub_roformer")
-            size_txt = "~250 MB"
+            size_txt = "~610 MB"
             subfolder = "RoFormer"
+            sidecar = "model_bs_roformer_ep_317_sdr_12.9755.yaml"
 
         self._model_size_txt = size_txt
         self._model_friendly_name = friendly_name
         self.lbl_sub.setText(display_name)
 
-        models_dir = os.path.join(self.config.appdata_dir, "models", subfolder)
-        model_path = os.path.join(models_dir, model_name)
+        # Preserve active progress bar styling/text if a model download is currently running
+        if getattr(self, "_is_downloading_model", False):
+            return
 
-        if os.path.exists(model_path):
+        models_dir = os.path.join(self.config.appdata_dir, "models", subfolder)
+        if self._is_model_installed(models_dir, model_name, sidecar):
             self.btn_add.setText(t("btn_add_media"))
             self._model_needs_download = False
             self.reset_download_progress()
@@ -527,12 +562,27 @@ class JobQueueSection(QWidget):
             self.btn_add.setText(t("btn_download_model", model=friendly_name, size=size_txt))
             self._model_needs_download = True
 
-    def set_download_progress(self, pct: int, model_name: str = ""):
+    def set_download_progress(self, pct: int, model_name: str = "", speed_text: Optional[str] = None):
         pct = max(0, min(100, int(pct)))
         self._current_download_pct = pct
-        if not model_name:
-            model_name = getattr(self, "_model_friendly_name", self._get_friendly_model_name())
-        self.btn_add.setText(t("btn_downloading_model", model=model_name, pct=pct))
+        if speed_text is not None:
+            self._current_download_speed = speed_text
+        if model_name:
+            self._active_download_model_name = model_name
+        else:
+            model_name = (
+                getattr(self, "_active_download_model_name", "")
+                or getattr(self, "_model_friendly_name", self._get_friendly_model_name())
+            )
+        cached_speed = getattr(self, "_current_download_speed", "")
+        if cached_speed == "__VERIFYING__":
+            self.btn_add.setText(t("btn_verifying_model", model=model_name))
+        elif cached_speed == "__RECONNECTING__":
+            self.btn_add.setText(t("btn_reconnecting_model", model=model_name, pct=pct))
+        elif cached_speed:
+            self.btn_add.setText(t("btn_downloading_model_speed", model=model_name, pct=pct, speed=cached_speed))
+        else:
+            self.btn_add.setText(t("btn_downloading_model", model=model_name, pct=pct))
 
         pos = pct / 100.0
         rtl = is_rtl()
@@ -567,9 +617,13 @@ class JobQueueSection(QWidget):
 
     def reset_download_progress(self):
         self._current_download_pct = 0
+        self._current_download_speed = ""
+        self._active_download_model_name = ""
         self.btn_add.setStyleSheet(get_primary_button_qss(self._theme_mode))
 
     def _on_add_clicked(self):
+        if getattr(self, "_is_downloading_model", False):
+            return
         if "Local" in self.mode and getattr(self, "_model_needs_download", False):
             model_name = self._get_selected_model_name()
             subfolder = "RoFormer" if "roformer" in model_name.lower() else ("MDX23C" if "mdx23c" in model_name.lower() else "Kim_Vocal_2")
@@ -584,13 +638,15 @@ class JobQueueSection(QWidget):
         else:
             self.update_model_button_state()
 
-        if "Cloud" in self.mode or not getattr(self, "_model_needs_download", False):
+        if getattr(self, "_is_downloading_model", False):
+            self.set_download_progress(getattr(self, "_current_download_pct", 0))
+        elif "Cloud" in self.mode or not getattr(self, "_model_needs_download", False):
             self.btn_add.setText(t("btn_add_media"))
         elif not self.btn_add.isEnabled():
             self.set_download_progress(getattr(self, "_current_download_pct", 0))
         else:
             friendly_name = getattr(self, "_model_friendly_name", self._get_friendly_model_name())
-            size_txt = getattr(self, "_model_size_txt", "~250 MB")
+            size_txt = getattr(self, "_model_size_txt", "~610 MB")
             self.btn_add.setText(t("btn_download_model", model=friendly_name, size=size_txt))
 
         self.btn_select_mode.setText(t("btn_exit_selection") if self.selection_mode else t("btn_select_mode"))

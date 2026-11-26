@@ -40,6 +40,8 @@ def _run_ffmpeg_abortable(cmd: list, abort_check: Optional[Callable[[], bool]] =
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.PIPE,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
     }
     try:
         from system_utils import get_subprocess_spawn_kwargs
@@ -111,7 +113,14 @@ def get_duration(media_path: str) -> float:
     ]
     
     try:
-        kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 180.0}
+        kwargs = {
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "check": True,
+            "timeout": 180.0,
+        }
         try:
             from system_utils import get_subprocess_spawn_kwargs
         except ImportError:
@@ -154,7 +163,14 @@ def probe_container(media_path: str) -> dict:
         media_path
     ]
 
-    kwargs = {"capture_output": True, "text": True, "check": True, "timeout": 180.0}
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "check": True,
+        "timeout": 180.0,
+    }
     try:
         from system_utils import get_subprocess_spawn_kwargs
     except ImportError:

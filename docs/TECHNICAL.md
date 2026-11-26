@@ -1,6 +1,6 @@
 # Technical Architecture
 
-*Verified against codebase (v0.0.3).*
+*Verified against codebase (v1.0.1).*
 
 ---
 
@@ -63,7 +63,7 @@
 EarPurifier is a desktop audio isolation and vocal purification studio engineered with PySide6. The application is built to remove background music, instrumentation, and noise from video and audio containers while preserving multi-track stream graphs, subtitles, metadata, and container timing.
 
 EarPurifier operates via an asymmetric **Dual-Engine Architecture**:
-- **Local Engine**: Spawns an isolated Python 3.11 environment managed via micromamba, running PyTorch with CUDA 12.1 hardware acceleration or CPU fallback.
+- **Local Engine**: Spawns an isolated micromamba Python environment (Python 3.11 on Windows; Python 3.10 on Apple Silicon macOS and Linux), running constraints-locked PyTorch + TorchVision with adaptive CUDA 12 hardware acceleration (`cu126`/`cu128`/`cu124`/`cu121`), Apple Silicon MPS, or CPU fallback, paired with CUDA 12 `onnxruntime-gpu<1.27.0`.
 - **Cloud Engine**: Offloads compute to remote Kaggle T4 cloud GPUs via serverless worker scripts. It leverages an immutable offline asset cache (`earpurifier-cloud-assets-v2`) to eliminate container boot overhead and reduce spin-up latency from 45 seconds to 2 seconds.
 
 ---
@@ -159,7 +159,7 @@ File: `main.py`
 | `ui/job_widget.py` | `JobWidget` | Main UI Thread | Local card presentation, 1-second countdown timer | Local UI timer updates |
 | `ui/components.py` | `SidebarNavButton`, `EngineTelemetryPill`, `RotatingSpinner` | Main UI Thread | Vector painting state, breath timer phase | In-memory canvas rendering |
 | `ui/dialogs.py` | `SettingsDialog`, `DeleteConfirmDialog`, `AudioTrackSelectDialog`, `PhoneVerificationWarningDialog` | Main UI Thread | Form entries, transient selections, modeless warning state | Reads/writes `config.json` via `ConfigManager` |
-| `ui/overlay_widgets.py` | `VerificationReminderBanner` | Main UI Thread | Auto-dismiss timer (20s), banner geometry | Non-blocking inline canvas overlay |
+| `ui/overlay_widgets.py` | `DownloadOverlayWidget`, `CloseActiveJobDialog`, `VerificationReminderBanner`, `GpuUpgradeBanner` | Main UI Thread | Overlay/banner visibility, auto-dismiss timer (20s), inline GPU upgrade progress | Non-blocking inline canvas banners and dependency download overlays |
 | `ui/theme.py` | `Theme`, `ThemeMode` | Main UI Thread | Color tokens, QSS templates, font families | Resolves SVG assets on disk |
 | `queue_manager.py` | `QueueManager` | Thread-Safe (Any) | `self.state["jobs"]`, `self._pending_deletions` protected by `threading.RLock` | Atomic read/write `%APPDATA%/.../job_state.json` |
 | `config_manager.py`| `ConfigManager` | Thread-Safe (Any) | Application preferences, encrypted API key | Atomic read/write `%APPDATA%/.../config.json` |
@@ -267,27 +267,33 @@ File: `main.py`
 
 ### 6.1. Local Engine Execution Harness
 Managed by `local_processor.py` and `dependency_manager.py`:
-- **Isolation Boundary**: Runs in a hermetic Python 3.11 environment in `%APPDATA%/EarPurifier/env` provisioned via micromamba.
-- **Hardware Routing & Dynamic Download Footprint**:
-  - Dynamically evaluates CUDA availability via Windows driver probe (`nvcuda.dll`) and `nvidia-smi -L` (3-second timeout).
-  - *Non-NVIDIA Host (CPU Mode)*: Downloads PyTorch CPU wheels (~196 MB) + environment dependencies for an aggregate download payload of **~350 MB** (~1.3 GB uncompressed on disk).
-  - *NVIDIA Host (CUDA Mode)*: Downloads PyTorch `cu121` wheels (~2.34 GB) + dependencies for an aggregate download payload of **~2.7 GB** (~5.5 GB on disk).
-- **Hermetic Installation Verification & Marker Contract**:
-  - `EngineDownloader` atomically writes a `.engine_installed` marker file inside the environment root strictly after all wheels and entry points verify.
-  - `DependencyManager.has_local_engine()` checks for `python.exe`, `audio-separator.exe`, and `.engine_installed`, preventing interrupted or cancelled downloads from leaving ghost partial environments. A backward-compatibility probe verifies and backfills legacy environments containing `torch` and `audio_separator` in `site-packages`.
-- **Package Pruning & Disk Optimization**:
-  - Prunes redundant `torchvision` and `torchaudio` dependencies, installing only core `torch` and `audio-separator`.
-  - All pip subprocess invocations enforce `--no-cache-dir --disable-pip-version-check`, preventing wheel caching into `%LOCALAPPDATA%`, cutting disk write amplification in half, and preventing Windows Defender scanning saturation.
-  - Removes `check=True` on pip subprocess calls to ensure non-zero exit codes during CUDA installation trigger a clean, logged fallback to CPU wheels rather than raising an uncaught `CalledProcessError`.
-- **Subprocess Execution & CLI Optimization**:
-  - Passes `--single_stem=Vocals` to `audio-separator.exe` (`local_processor.py`), suppressing redundant instrumental WAV generation and saving ~300 MB of intermediate disk I/O and file scan latency per run.
-  - Sets `bufsize=1` and `stderr=subprocess.STDOUT` to eliminate OS pipe saturation deadlocks.
-  - Prepends isolated environment scripts and MinGW DLL paths to process `PATH`.
-  - Registers the `Popen` instance in `process_tracker`.
-- **Supported Local Model Weights**:
-  - Band-Split RoFormer: `model_bs_roformer_ep_317_sdr_12.9755.ckpt` (~1.8 GB)
-  - MDX23C: `MDX23C-8KFFT-InstVoc_HQ.ckpt` (~1.2 GB)
-  - Kim Vocal 2: `Kim_Vocal_2.onnx` (~215 MB)
+- **Isolation Boundary**: Runs in a hermetic micromamba environment: Python 3.11 in `%APPDATA%/EarPurifier/env` on Windows (with 8.3 short-path resolution when the path contains spaces), and Python 3.10 on Linux (`~/.local/share/EarPurifier/env`) and macOS (`~/.earpurifier/env`, space-free for `diffq` builds). *Note: Upstream PyTorch $\ge 2.3$ no longer publishes Intel `macosx_x86_64` wheels; macOS Local Engine requires Apple Silicon, while Cloud Engine works on Intel Macs.*
+- **Battery-Safe Host Detection & Adaptive CUDA 12 Routing**:
+  - **Main GUI Process**: `DependencyManager.has_nvidia_gpu()` is cached per `sys.platform` (returning `False` immediately on `darwin`) and checks only driver library presence (`nvcuda.dll` / `libcuda.so`) with `nvidia-smi -L` fallback. It **never** calls `cuInit(0)` in the GUI process to prevent waking discrete Optimus/MUX GPUs on hybrid-graphics laptops.
+  - **Background Worker Probe (`EngineDownloader`)**: Only when installing or upgrading the Local Engine on non-macOS hosts, an isolated `env_python` subprocess probes `cuDriverGetVersion`, `cuInit(0)`, `cuDeviceGetCount`, and `cuDeviceGetAttribute(75)` (compute capability major), with fail-safe fallbacks (`nvidia-smi` CUDA version parse, then safe `cu121` default):
+    - Blackwell (`compute_cap_major >= 10`) & driver $\ge 12.8$ $\to$ `["cu128", "cu126"]`
+    - Driver $\ge 12.6$ $\to$ `["cu126", "cu124", "cu121"]`
+    - Driver $12.4\text{–}12.5$ $\to$ `["cu124", "cu121"]`
+    - Driver $12.1\text{–}12.3$ or unknown $\to$ `["cu121"]`
+    - Driver $< 12.1$ or `device_count == 0` $\to$ skips CUDA 12 and installs CPU cleanly with a logged driver-update warning.
+  - *Download Footprints*: CPU Mode ~350 MB (~1.3 GB on disk); NVIDIA CUDA 12 Mode ~2.7 GB (~5.5 GB on disk).
+- **Pip Constraints Lock & CUDA 12 Integrity (Anti-CPU-Overwrite)**:
+  - Step 2 installs `torch` and `torchvision` **together** from the selected CUDA 12 index (sequentially trying fallbacks on failure), `whl/cpu` on CPU-only Windows/Linux, or default PyPI on Apple Silicon macOS.
+  - Step 3 queries the exact installed `torch` and `torchvision` versions via `importlib.metadata.version(...)`, writes a temporary `constraints.txt` (`-c`), passes `--extra-index-url <chosen_index>`, and installs `audio-separator[gpu]` + `"onnxruntime-gpu<1.27.0"` (pinning CUDA 12 so `onnxruntime-gpu>=1.27.0` CUDA 13 wheels are excluded) or `audio-separator[cpu]` on CPU/macOS. This prevents `audio-separator -> onnx2torch-py313 -> torchvision` from silently uninstalling CUDA PyTorch and replacing it with PyPI CPU-only `torch`.
+  - Step 4 verifies `import torch, audio_separator`, asserts `bool(torch.version.cuda)` (and `"+cu"` on Windows) when GPU mode was installed, and writes `.engine_installed` (`INSTALLED\nmode=cuda|mps|cpu\ntorch=<ver>\n`) while clearing the `.engine_in_progress` mutation sentinel (which prevents legacy `site-packages` backfill from resurrecting failed or interrupted installs).
+  - All pip invocations enforce `--no-cache-dir --disable-pip-version-check --prefer-binary --default-timeout=120` via `EngineDownloader._run_tracked_command()` (`Popen` + `process_tracker`).
+- **In-Place GPU Upgrade Path (`GpuUpgradeBanner`)**:
+  - `DependencyManager.get_installed_torch_info()` performs zero-subprocess inspection of `site-packages/torch/version.py` (`cuda = None` vs CUDA string, because PyPI wheels omit `+cpu` in `METADATA`).
+  - When an NVIDIA host has a CPU-only local engine, the Local tab shows a non-blocking, dismissible bilingual `GpuUpgradeBanner`. Triggering an upgrade verifies no pending/active local jobs or model downloads are running, probes driver compatibility before mutating `env/`, removes `.engine_installed`, runs `pip uninstall -y torch torchvision onnxruntime onnxruntime-gpu audio-separator`, and installs/verifies the constraints-locked CUDA 12 stack.
+- **Subprocess Environment, Multi-CDN Segmented Downloading, & CLI Execution**:
+  - All local engine subprocesses (`EngineDownloader`, `ModelDownloader` fallback, `LocalJobProcessor`) share `DependencyManager.get_engine_subprocess_env()`, which strips PyInstaller leaks, sets `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8`, prepends platform-correct `env` dirs (including `torch/lib` on Windows), and dynamically injects managed bin directories plus `os.path.dirname(get_executable("ffmpeg"|"ffprobe"))`.
+  - **Direct Multi-CDN Segmented Downloader (`_SegmentedFileDownloader`)**: Both `ModelDownloader` (for all built-in manifest models + required `.yaml`/`.json` sidecars) and `FFmpegDownloader` route heavy downloads through a reusable 6-worker HTTP `Range` (`206 Partial Content`, 4 MiB chunks, 64 KiB read blocks) downloader with per-thread `requests.Session`, intact OS TCP receive-window auto-tuning (`TCP_NODELAY=1`, no `SO_RCVBUF` cap), deadline-bounded IPv4-interleaved connect() (immune to multi-AAAA IPv6 blackholes), `Accept-Encoding: identity` probing (without double-timeout on transport failures), zero upfront `f.truncate` (avoiding NTFS VDL zero-fill stalls), pre-flight disk-space guarding (`remaining + 64 MiB`), resumable `.part` + atomic `.part.meta` checkpoints, slow-ISP-safe true-stall (`<4 KiB/s` for 15s) and relative straggler (`<32 KiB/s` for 10s and `<15%` peer median) watchdogs, HTTP 401/403 SAS refresh under lock, graceful anti-thrash cross-CDN failover (GitHub Releases ↔ HuggingFace CDN, preserving `>=50%` in-flight chunks on speed-only switches), session-level TTL degraded-host deprioritization, interruptible VPN/network-interface recovery backoff (`2s→4s→6s→8s→10s`, resetting budget after forward progress, flushing stale pools, and resuming seamlessly on `.part`), full SHA-256 / JSON schema verification synchronized with installed `audio_separator/model-checksums.json`, Windows Defender-safe 5× atomic promotion, live session-only `MB/s` speed telemetry (`progress_detail`), and instant cooperative per-socket/per-thread abort on `stop()` or failover.
+  - **Scoped Subprocess Fallback**: `ModelDownloader` falls back to its isolated `*_temp_download.py` (`Separator(..., info_only=True)` + `download_model_and_data()`) **only** for unknown/custom model names or non-network manifest mirror failures (cleaning up `.part`/`.part.meta` first) — never on user cancellation, disk-full errors, or transient network outages (where `.part` + `.part.meta` are preserved on disk for instant resume).
+  - `LocalJobProcessor` passes `--single_stem=Vocals`, sets `bufsize=1`, `stderr=subprocess.STDOUT`, `encoding="utf-8", errors="replace"`, registers with `process_tracker`, and exposes `abort_current_job(job_id)` to kill the subprocess immediately and unblock `readline()`.
+- **Supported Local Model Weights & Required Sidecars**:
+  - Band-Split RoFormer: `model_bs_roformer_ep_317_sdr_12.9755.ckpt` (~610 MiB) + `model_bs_roformer_ep_317_sdr_12.9755.yaml`
+  - MDX23C: `MDX23C-8KFFT-InstVoc_HQ.ckpt` (~427 MiB) + `model_2_stem_full_band_8k.yaml`
+  - Kim Vocal 2: `Kim_Vocal_2.onnx` (~64 MiB)
 
 ### 6.2. Cloud Engine & Kaggle Infrastructure
 Managed by `processor_thread.py`, `kaggle_bridge.py`, and `worker/worker.py`:
@@ -460,7 +466,10 @@ All updates to `config.json` and `job_state.json` invoke `_atomic_write_json()`:
 | **Premature Batch Dequeue (Ghost Job Race)** | Single-pass queueing caused background worker to dequeue single-stream audio jobs while the multi-track dialog blocked the UI. | Enforces 2-pass atomic batch ingestion: probes and resolves track dialogs before any job enters `QueueManager`. | `ui/main_window.py`, `queue_manager.py` |
 | **Unverified Kaggle Account GPU Stall** | Kaggle accounts without phone verification cannot allocate GPUs; kernels requesting GPUs hang in queue indefinitely or crash. | Pre-extraction quota check (`check_gpu_quota_status`) probes `has_ever_run` in <=5s before FLAC extraction. Surfaces a bilingual modeless warning dialog or 20s auto-closing banner advising switch to Kim Vocal 2, without blocking queueing or CPU models. | `kaggle_bridge.py`, `processor_thread.py`, `ui/dialogs.py`, `ui/overlay_widgets.py` |
 | **GPU Quota Burn on Aborted Cloud Kernels** | Pushing cancellation stubs or simply dropping local sockets can queue behind Kaggle's version concurrency, leaving active GPU containers burning quota for minutes. | Employs immediate, deterministic container deletion via `api.kernels_delete(kernel_id, no_confirm=True)` wrapped in idempotent 403/404 exception handling. Terminates remote GPU execution in ~0.44s without disk stub overhead. | `kaggle_bridge.py`, `processor_thread.py` |
-| **Model Download Progress Regression (Kim Vocal 2)** | Auxiliary UVR metadata downloads (`vr_model_data.json`) spawn secondary `tqdm` streams at 0% after model weights finish. | Enforces strict progress monotonicity (`pct > last_pct`) in `ModelDownloader`, preventing the UI progress bar from collapsing to 0% during post-download ONNX session initialization. | `dependency_manager.py` |
+| **Model Download Progress Freeze & Regression** | Auxiliary UVR metadata downloads (`download_checks.json` at `28.3k/28.3k [90.9MiB/s]`, `.yaml` configs, and `vr_model_data.json`) emit secondary `tqdm` streams that either prematurely lock `last_pct=100` before weights start or regress progress back to 0%. | Filters `tqdm` bars via explicit `<current>/<total><unit>` matching (`>= 10 MB` or `GB`) and enforces strict progress monotonicity (`pct > last_pct`). | `dependency_manager.py` |
+| **Throttled Single-Stream GitHub Releases Downloads** | Delegating model weights to `audio-separator` (and single-stream `FFmpegDownloader`) used 1 TCP stream against `release-assets.githubusercontent.com` with a 300s read timeout, zero CDN diversity, destructive restart on stall, and heavy PyTorch import overhead before byte 1. | Routes built-in models (plus `.yaml`/`.json` sidecars) and `FFmpegDownloader` through `_SegmentedFileDownloader` (4-worker HTTP `206` Range, resumable `.part.meta`, slow-ISP-safe true-stall/straggler watchdogs, SAS 401/403 refresh, anti-thrash GitHub ↔ HuggingFace failover, SHA-256 verification, 5× Defender-safe atomic promotion, live `MB/s` telemetry, instant `cancel()` socket close). | `dependency_manager.py`, `ui/job_queue_section.py`, `ui/main_window.py` |
+| **Local Subprocess Missing FFmpeg & Encoding Crash** | Subprocesses omitting `%APPDATA%/EarPurifier/bin` or dynamic FFmpeg dirs raise `FileNotFoundError: FFmpeg is not installed`; Arabic Windows (`cp1256`) triggers `UnicodeDecodeError` on UTF-8 logs. | Centralizes `get_engine_subprocess_env()` (dynamic FFmpeg/FFprobe `PATH` + `PYTHONUTF8=1` + `PYTHONIOENCODING=utf-8`), passes `encoding="utf-8", errors="replace"` on all subprocesses, and downloads models with `Separator(..., info_only=True)` + `download_model_and_data()`. | `system_utils.py`, `dependency_manager.py`, `local_processor.py`, `media_engine.py` |
+| **Silent Local CUDA $\to$ CPU PyTorch Overwrite** | Installing `torch` without `torchvision` allows `audio-separator -> onnx2torch-py313 -> torchvision` to resolve newer PyPI `torchvision`, silently uninstalling CUDA `torch` and installing PyPI CPU `torch`; `onnxruntime-gpu>=1.27.0` also requires CUDA 13. | Installs `torch` + `torchvision` together from adaptive CUDA 12 index, locks exact versions via temporary `constraints.txt` + `"onnxruntime-gpu<1.27.0"`, verifies `torch.version.cuda` in Step 4, and surfaces non-blocking `GpuUpgradeBanner` for legacy CPU installs on NVIDIA hosts. | `dependency_manager.py`, `ui/overlay_widgets.py`, `ui/main_window.py` |
 | **Model Selection Default Fallback Asymmetry** | Missing or uninitialized `local_model` in `config.json` fell into divergent fallbacks (Settings showing RoFormer while backend execution and UI buttons defaulted to Kim Vocal 2). | Pre-packages and atomically persists RoFormer default upon initial boot, aligns all backend and UI fallback branches to RoFormer, and immediately synchronizes button state when engine installation finishes. | `config_manager.py`, `ui/job_queue_section.py`, `ui/main_window.py`, `local_processor.py`, `processor_thread.py` |
 
 ---
