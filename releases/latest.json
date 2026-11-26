@@ -9,7 +9,7 @@
   "download_url": "https://github.com/nitpacker/EarPurifier/releases/download/v1.0.1/EarPurifier1.0.1.exe",
   "html_url": "https://github.com/nitpacker/EarPurifier/releases/tag/v1.0.1",
   "message": {
-    "ar": "إصلاح مشكلة تنزيل النماذج المحلية، وتفعيل تسريع بطاقات NVIDIA (CUDA 12) تلقائياً مع خيار ترقية بنقرة واحدة، وتحسين دعم macOS واستقرار التطبيق",
-    "en": "Fixed local model downloads, automatic NVIDIA GPU (CUDA 12) acceleration with 1-click upgrade, improved macOS support, and stability fixes"
+    "ar": "إصلاح مشكلة تنزيل النماذج المحلية، وتفعيل تسريع بطاقات NVIDIA (CUDA 12) تلقائياً، وتحسين استقرار التطبيق",
+    "en": "Fixed local model downloads, automatic NVIDIA GPU (CUDA 12) acceleration with 1-click upgrade, and stability fixes"
   }
 }
